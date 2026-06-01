@@ -158,7 +158,7 @@ if __name__ == "__main__":
         station_out         = 2,
         ram_recovery_factor = 0.97,
         highlight_profile   = "bellmouth",
-        lip_radius_ratio    = 0.08,
+        lip_radius_ratio    = 0.15,
         r_inlet_inner       = 0.18,
         r_inlet_outer       = 0.20,
         r_outlet_inner      = 0.16,
