@@ -133,7 +133,7 @@ Cita la fonte del contesto quando rilevante.
     with st.chat_message("assistant"):
         with st.spinner("Sto cercando nella knowledge base..."):
             response = gemini_client.models.generate_content(
-                model="gemini-2.5-flash-lite",
+                model="gemini-2.5-flash",
                 contents=user_prompt,
                 config={"system_instruction": SYSTEM_PROMPT}
             )
