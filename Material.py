@@ -46,11 +46,7 @@ class Material(Base):
     def fracture_strain(self):              # -
         return self.get_info_material()["fracture_strain"]
 
-    # ------------------------------------------------------------------
-    # Display attribute – RGB tuple for CAD visualisation
-    # Not overridable by the user; purely derived from the DB entry.
-    # ------------------------------------------------------------------
-    @Attribute
+    @Input
     def color(self):
         return self.get_info_material()["color"]
 

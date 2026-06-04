@@ -129,7 +129,7 @@ class EngineComponent(GeomBase):
             position = self.position,
             radius=self.radius,
             height=self.length,
-            color="gray",
+            color=self.material.color,
         )
 
     @Attribute

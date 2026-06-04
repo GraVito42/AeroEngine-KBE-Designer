@@ -37,6 +37,8 @@ from parapy.geom  import (
 )
 
 from Flow_station import FlowStation
+from Material     import Material
+from Duct         import Duct
 from Inlet        import Inlet
 from Nozzle       import Nozzle
 
@@ -57,18 +59,9 @@ class EngineFrame(GeomBase):
     #: FlowStation at station 6 (nozzle inlet = turbine exit)
     nozzle_inflow: object = Input()
 
-    # ------------------------------------------------------------------
-    # Main casing barrel geometry
-    # ------------------------------------------------------------------
 
-    #: [m]       Total axial length of the casing barrel
-    length_casing: float = Input(2.0)
 
-    #: [m]       Outer radius of the cylindrical casing
-    r_casing: float = Input(0.35)
 
-    #: [m]       Casing wall thickness
-    wall_thickness: float = Input(0.012)
 
     # ------------------------------------------------------------------
     # Material properties — blade-off containment
@@ -76,6 +69,9 @@ class EngineFrame(GeomBase):
 
     #: str    Material name of the frame
     material_name: str = Input("Ti-6Al-4V")
+
+    #: [m]    Metal sheet thickness
+    sheet_thickness: float = Input(0.003)
 
     #: [-]    Containment safety factor  (typical regulatory requirement ≥ 1.5)
     safety_factor: float = Input(1.5)
@@ -101,10 +97,10 @@ class EngineFrame(GeomBase):
     # ------------------------------------------------------------------
 
     #: str   Inlet highlight contour: 'bellmouth' | 'straight'
-    inlet_highlight_profile: str = Input("curved")
+    inlet_lip_profile: str = Input("curved")
 
     #: [-]   Total-pressure recovery factor for the inlet
-    inlet_ram_recovery_factor: float = Input(0.98)
+    inlet_pressure_ratio: float = Input(0.98)
 
     #: [-]   Inlet isentropic efficiency
     inlet_isos_efficiency: float = Input(0.95)
@@ -112,37 +108,28 @@ class EngineFrame(GeomBase):
     #: [-]   Inlet exit Mach number
     inlet_Mach_out: float = Input(0.45)
 
-    #: [m]   Axial length of the ducts
+    #: [m]   Axial length of the inlet duct
     inlet_length: float = Input(0.55)
-    nozzle_length: float = Input(0.60)
 
-    @Input
-    def inlet_r_inner(self) -> float:
-        """Inner radius at the inlet highlight face [m]."""
-        return self.r_casing - self.wall_thickness
+    #: [m]   Wall thickness of the inlet
+    inlet_wall_thickness: float = Input(0.012)
 
-    @Input
-    def inlet_r_outer(self) -> float:
-        """Outer radius at the inlet highlight face [m]."""
-        return self.r_casing
+    # ------------------------------------------------------------------
+    # Casing duct inputs
+    # ------------------------------------------------------------------
 
-    @Input
-    def inlet_r_outlet_inner(self) -> float:
-        """Inner radius at the inlet duct exit (= compressor face) [m]."""
-        return self.r_casing - self.wall_thickness
+    #: [m]       Total axial length of the casing barrel
+    length_casing: float = Input(2.0)
 
-    @Input
-    def inlet_r_outlet_outer(self) -> float:
-        """Outer radius at the inlet duct exit [m]."""
-        return self.r_casing
+    #: [m]   Wall thickness of the casing inlet =  Wall thickness of the inlet at the exit
+    casing_inlet_wall_thickness: float = Input(0.012)
+
+    #: [m]   Wall thickness of the casing outlet =  Wall thickness of the nozzle at the entrance
+    casing_outlet_wall_thickness: float = Input(0.012)
 
     # ------------------------------------------------------------------
     # Nozzle duct inputs
     # ------------------------------------------------------------------
-
-    #: bool  True → convergent-divergent nozzle geometry
-    nozzle_is_cd: bool = Input(False)
-
     #: [-]   Total-pressure ratio across the nozzle
     nozzle_pressure_ratio: float = Input(0.97)
 
@@ -150,36 +137,16 @@ class EngineFrame(GeomBase):
     nozzle_isos_efficiency: float = Input(0.96)
 
     #: [-]   Nozzle exit Mach number (set > 1.0 for C-D supersonic)
-    nozzle_Mach_out: float = Input(0.90)
+    nozzle_Mach_out: float = Input(1.20)
 
     #: [m]   Axial length of the nozzle duct
     nozzle_length: float = Input(0.45)
 
+    #: [m]   Wall thickness of the nozzle exit
+    nozzle_wall_thickness: float = Input(0.012)
+
     #: [Pa]  Ambient static pressure — reference for thrust coefficient
-    nozzle_p_ambient: float = Input(101325.0)
-
-    #: [-]   C-D throat-to-inlet area ratio (only active when nozzle_is_cd=True)
-    nozzle_throat_area_ratio: float = Input(0.8)
-
-    @Input
-    def nozzle_r_inlet_inner(self) -> float:
-        """Nozzle inlet inner radius [m]."""
-        return self.r_casing - self.wall_thickness
-
-    @Input
-    def nozzle_r_inlet_outer(self) -> float:
-        """Nozzle inlet outer radius [m]."""
-        return self.r_casing
-
-    @Input
-    def nozzle_r_outlet_inner(self) -> float:
-        """Nozzle exit inner radius [m]. Default: 15 % convergence from inlet."""
-        return (self.r_casing - self.wall_thickness) * 0.85
-
-    @Input
-    def nozzle_r_outlet_outer(self) -> float:
-        """Nozzle exit outer radius [m]."""
-        return self.nozzle_r_outlet_inner + self.wall_thickness
+    p_ambient: float = Input(101325.0)
 
     # ------------------------------------------------------------------
     # Frame position (same convention as EngineComponent)
@@ -190,18 +157,15 @@ class EngineFrame(GeomBase):
         return rotate(XOY, 'y', 90, deg=True)
 
     # ------------------------------------------------------------------
+    # Material @Part - for structural analysis
+    # ------------------------------------------------------------------
+    @Part
+    def material(self):
+        return Material(material_name=self.material_name)
+
+    # ------------------------------------------------------------------
     # Blade-off analysis — attributes
     # ------------------------------------------------------------------
-
-    @Attribute
-    def casing_inner_radius(self) -> float:
-        """Inner radius of the casing barrel [m]."""
-        return self.r_casing - self.wall_thickness
-
-    @Attribute
-    def casing_wall_volume(self) -> float:
-        """Volume of the annular casing shell [m³]."""
-        return math.pi * (self.r_casing**2 - self.casing_inner_radius**2) * self.length
 
     @Attribute
     def kinetic_energy_blade_off(self) -> float:
@@ -209,8 +173,7 @@ class EngineFrame(GeomBase):
         Total kinetic energy of a released blade [J].
         E_k = ½ m v_tip² + ½ I ω²   (translational + rotational contributions)
         """
-        v_tip = self.blade_tip_radius * self.omega
-        return 0.5 * self.blade_mass * v_tip**2 + 0.5 * self.blade_inertia * self.omega**2
+        return 0.5 * self.blade_mass * self.blade_tip_radius * self.omega**2 + 0.5 * self.blade_inertia * self.omega**2
 
     @Attribute
     def strain_energy_casing(self) -> float:
@@ -219,8 +182,7 @@ class EngineFrame(GeomBase):
         E_s = σ_avg × ε_f × V_casing
         σ_avg is the average flow stress (trapezoidal rule on the σ-ε curve).
         """
-        sigma_avg = (self.casing.material.yield_strength + self.casing.material.ultimate_tensile_strength) / 2.0
-        return sigma_avg * self.casing.material.fracture_strain * self.casing_wall_volume
+        return (self.casing.material.yield_strength + self.casing.material.ultimate_tensile_strength) / 2.0 * self.casing.material.fracture_strain * self.casing_wall_volume
 
     def is_contained(self) -> bool:
         """True when the casing can absorb a blade-off event with the required margin."""
@@ -233,63 +195,7 @@ class EngineFrame(GeomBase):
           > 0  →  casing contains the blade (positive margin)
           ≤ 0  →  casing fails containment
         """
-        required = self.kinetic_energy_blade_off * self.safety_factor
-        return (self.strain_energy_casing - required) / required
-
-    # ------------------------------------------------------------------
-    # Mass properties
-    # ------------------------------------------------------------------
-
-    @Attribute
-    def casing_weight(self) -> float:
-        """Main casing barrel mass [kg]."""
-        return self.casing_wall_volume * self.material.density
-
-    @Attribute
-    def total_weight(self) -> float:
-        """Total frame mass: casing barrel + inlet duct + nozzle duct [kg]."""
-        return self.casing_weight + self.inlet_duct.weight + self.nozzle_duct.weight
-
-    # ------------------------------------------------------------------
-    # Geometry — Part 1: casing wall profile
-    # ------------------------------------------------------------------
-
-    @Attribute
-    def casing_profile_points(self):
-        """
-        Rectangular wall profile for the main casing barrel in local XY plane.
-        X = axial, Y = radial.
-        """
-        r_i = self.casing_inner_radius
-        r_o = self.r_casing
-        return [
-            Point(0.0,         r_i, 0.0),
-            Point(0.0,         r_o, 0.0),
-            Point(self.length, r_o, 0.0),
-            Point(self.length, r_i, 0.0),
-        ]
-
-    @Part
-    def casing_wall_profile(self):
-        return Polygon(
-            points=self.casing_profile_points,
-            hidden=True,
-        )
-
-    # ------------------------------------------------------------------
-    # Geometry — Part 2: casing body (shape-agnostic, reads casing_wall_profile)
-    # ------------------------------------------------------------------
-
-    @Part
-    def casing_body(self):
-        """Annular cylindrical shell — revolved 360° around local X (axial)."""
-        return RevolvedSolid(
-            built_from = self.casing_wall_profile,
-            center     = Point(0.0, 0.0, 0.0),
-            direction  = (1.0, 0.0, 0.0),
-            angle      = 2 * math.pi,
-            color      = (120, 130, 140),
-        )
+        return (self.strain_energy_casing - (self.kinetic_energy_blade_off * self.safety_factor)) / (self.kinetic_energy_blade_off * self.safety_factor)
 
     # ------------------------------------------------------------------
     # Child ducts — end-caps of the structural frame
@@ -307,14 +213,13 @@ class EngineFrame(GeomBase):
             isos_efficiency     = self.inlet_isos_efficiency,
             Mach_out            = self.inlet_Mach_out,
             station_out         = 2,
-            ram_recovery_factor = self.inlet_ram_recovery_factor,
-            highlight_profile   = self.inlet_highlight_profile,
+            pressure_ratio      = self.inlet_pressure_ratio,
+            lip_profile_type    = self.inlet_lip_profile,
+            sheet_thickness     = self.sheet_thickness,
             length              = self.inlet_length,
-            density             = self.density,
-            r_inlet_inner       = self.inlet_r_inner,
-            r_inlet_outer       = self.inlet_r_outer,
-            r_outlet_inner      = self.inlet_r_outlet_inner,
-            r_outlet_outer      = self.inlet_r_outlet_outer,
+            material_name       = self.material_name,
+            wall_thickness_inlet = self.inlet_wall_thickness,
+            wall_thickness_outlet = self.casing_inlet_wall_thickness,
         )
 
     @Part
@@ -325,20 +230,57 @@ class EngineFrame(GeomBase):
         """
         return Nozzle(
             inflow_conditions       = self.nozzle_inflow,
-            is_convergent_divergent = self.nozzle_is_cd,
-            pressure_ratio          = self.nozzle_pressure_ratio,
             isos_efficiency         = self.nozzle_isos_efficiency,
             Mach_out                = self.nozzle_Mach_out,
             station_out             = 7,
-            p_ambient               = self.nozzle_p_ambient,
-            throat_area_ratio       = self.nozzle_throat_area_ratio,
+            pressure_ratio          = self.nozzle_pressure_ratio,
+            p_ambient               = self.p_ambient,
             length                  = self.nozzle_length,
-            density                 = self.density,
-            r_inlet_inner           = self.nozzle_r_inlet_inner,
-            r_inlet_outer           = self.nozzle_r_inlet_outer,
-            r_outlet_inner          = self.nozzle_r_outlet_inner,
-            r_outlet_outer          = self.nozzle_r_outlet_outer,
+            material_name           = self.material_name,
+            wall_thickness_inlet    =self.casing_outlet_wall_thickness,
+            wall_thickness_outlet   =self.nozzle_wall_thickness,
         )
+
+
+    @Part
+    def casing_inflow(self):
+        """Flow condition at the inlet of the casing,
+           mainly defined as a helper part to simplify notation in
+           casing duct definition."""
+        return self.inlet_inflow.isentropic_trans(
+            target_type="temperature",
+            target_value= self.inlet_inflow.p_total * self.inlet_pressure_ratio,
+            isos_efficiency = self.inlet_isos_efficiency,
+            Mach_out = self.inlet_Mach_out,
+        )
+
+    @Part
+    def casing_body(self):
+        """Casing inherits from Duct class: builds a Revolved solid coherent with the other ducts."""
+        return Duct(
+            inflow_conditions=self.casing_inflow,
+            length=self.inlet_length,
+            material_name=self.material_name,
+            #Mach_design=0.5,
+            Mach_out=self.nozzle_inflow.Mach,
+            pressure_ratio=self.nozzle_inflow.p_total / self.casing_inflow.p_total,
+            isos_efficiency=1,
+            station_out=6,
+            r_inlet_inner= self.inlet_duct.r_outlet_inner,
+            r_outlet_inner=self.nozzle_duct.r_inlet_inner,
+            wall_thickness_inlet=self.casing_inlet_wall_thickness,
+            wall_thickness_outlet=self.casing_outlet_wall_thickness,
+        )
+
+    # ------------------------------------------------------------------
+    # Mass properties
+    # ------------------------------------------------------------------
+
+
+    @Attribute
+    def frame_weight(self) -> float:
+        """Total frame mass: casing barrel + inlet duct + nozzle duct [kg]."""
+        return self.casing_body.weight + self.inlet_duct.weight + self.nozzle_duct.weight
 
     # ------------------------------------------------------------------
     # Validation
@@ -346,40 +288,6 @@ class EngineFrame(GeomBase):
 
     def validate(self):
         warnings = []
-
-        if not (0.0 < self.wall_thickness < self.r_casing):
-            warnings.append(
-                f"EngineFrame: wall_thickness={self.wall_thickness:.4f} m must be "
-                f"in (0, r_casing={self.r_casing:.4f} m)."
-            )
-
-        if self.safety_factor < 1.0:
-            warnings.append(
-                f"EngineFrame: safety_factor={self.safety_factor:.2f} is below 1.0 "
-                f"— no structural margin over the blade kinetic energy."
-            )
-
-        if self.casing.material.yield_strength >= self.ult_strength:
-            warnings.append(
-                f"EngineFrame: yield_strength={self.casing.material.yield_strength/1e6:.1f} MPa "
-                f">= ult_strength={self.ult_strength/1e6:.1f} MPa — check material data."
-            )
-
-        if not (0.0 < self.casing.material.fracture_strain <= 1.0):
-            warnings.append(
-                f"EngineFrame: fracture_strain={self.casing.material.fracture_strain:.3f} outside (0, 1]."
-            )
-
-        if not self.is_contained():
-            warnings.append(
-                f"EngineFrame: blade-off NOT contained. "
-                f"E_k×SF = {self.kinetic_energy_blade_off * self.safety_factor:.1f} J  "
-                f"> E_s = {self.strain_energy_casing:.1f} J. "
-                f"Increase wall_thickness or reduce omega / blade_mass."
-            )
-
-        warnings += self.inlet_duct.validate()
-        warnings += self.nozzle_duct.validate()
 
         return warnings
 

@@ -119,13 +119,13 @@ class Duct(EngineComponent):
             Replace this method and compute A_min from the physical
             throat area of the C-D profile instead.
         """
-        sonic_station = self.inflow_conditions.isentropic_trans(
+
+        a_star = self.inflow_conditions.isentropic_trans(
             target_type  = "temperature",
             target_value = self.inflow_conditions.p_total * self.pressure_ratio,
             eta          = 1.0,
             Mach_out     = 1.0,
-        )
-        a_star = sonic_station.area
+        ).area
 
         raw_outlet = self.inflow_conditions.isentropic_trans(
             target_type  = "temperature",
@@ -257,7 +257,7 @@ class Duct(EngineComponent):
             center     = Point(0.0, 0.0, 0.0),
             direction  = (1.0, 0.0, 0.0),   # local X = axial
             angle      = 2 * math.pi,
-            color=(148, 148, 148),
+            color=self.material.color,
         )
 
     # ----------------------------------------------------------------------------------

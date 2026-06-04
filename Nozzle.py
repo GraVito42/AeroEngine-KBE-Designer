@@ -335,4 +335,4 @@ if __name__ == "__main__":
             print(f"\n  [VALIDATION] all checks passed.")
         print()
 
-    display(nozzle_cd)
+    display(nozzle_conv)

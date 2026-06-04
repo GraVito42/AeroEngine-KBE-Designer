@@ -148,7 +148,7 @@ class Combustor(EngineComponent):
             tool=[self._inner_wall,
                   self._ribs[0], self._ribs[1],
                   self._ribs[2], self._ribs[3]],
-            color=(181, 166, 66),
+            color=self.material.color,
           )
 
     # ------------------------------------------------------------------
@@ -192,7 +192,7 @@ if __name__ == '__main__':
     comb = Combustor(
         inflow_conditions = inlet,
         outlet_flow       = outlet,
-        density           = 8000,
+        material_name     = "Inconel-718",
         station_out       = 4,
         Mach_out          = 0.2,
         internal_radius   = 0.15,
