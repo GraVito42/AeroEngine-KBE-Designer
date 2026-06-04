@@ -23,6 +23,7 @@ import math
 from parapy.core import Input, Attribute, Part
 from parapy.geom import Point, Polygon
 
+from Flow_station import FlowStation
 from Duct import Duct
 
 

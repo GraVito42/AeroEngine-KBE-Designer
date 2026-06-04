@@ -258,6 +258,7 @@ class Duct(EngineComponent):
             direction  = (1.0, 0.0, 0.0),   # local X = axial
             angle      = 2 * math.pi,
             color=self.material.color,
+            position=self.position,
         )
 
     # ----------------------------------------------------------------------------------

@@ -15,34 +15,43 @@ import os
 # ------------------------------------------------------------------
 # Hardcoded fallback (used if CSV is not available)
 # ------------------------------------------------------------------
+_COLOR_MAP = {
+    "ti":      (179, 179, 230),   # titanium  → light blue
+    "inconel": (204, 153,  51),   # Ni alloys → gold
+    "al":      (217, 217, 217),   # aluminium → light grey
+    "steel":   (102, 102, 102),   # steel     → dark grey
+    "cfrp":    ( 38,  38,  38),   # composites→ near black
+    "default": (153, 153, 153),
+}
+
 MATERIAL_DB_FALLBACK = {
     "Ti-6Al-4V": {
         "density":                    4430.0,
         "yield_stress":               880e6,
         "ultimate_tensile_strength":  950e6,
         "fracture_strain":            0.14,
-        "color":                      (0.7, 0.7, 0.9),
+        "color":                      (179, 179, 230),
     },
     "Inconel-718": {
         "density":                    8190.0,
         "yield_stress":               1100e6,
         "ultimate_tensile_strength":  1375e6,
         "fracture_strain":            0.12,
-        "color":                      (0.8, 0.6, 0.2),
+        "color":                      (204, 153, 51),
     },
     "Al-2024-T3": {
         "density":                    2780.0,
         "yield_stress":               345e6,
         "ultimate_tensile_strength":  483e6,
         "fracture_strain":            0.18,
-        "color":                      (0.85, 0.85, 0.85),
+        "color":                      (217, 217, 217),
     },
     "Steel-4340": {
         "density":                    7850.0,
         "yield_stress":               470e6,
         "ultimate_tensile_strength":  745e6,
         "fracture_strain":            0.22,
-        "color":                      (0.4, 0.4, 0.4),
+        "color":                      (102, 102, 102),
     },
 }
 
@@ -60,15 +69,6 @@ MATWEB_COLUMN_MAP = {
 }
 
 # Default CAD colors per material family (heuristic on name substring)
-_COLOR_MAP = {
-    "ti":      (0.7,  0.7,  0.9),   # titanium  → light blue
-    "inconel": (0.8,  0.6,  0.2),   # Ni alloys → gold
-    "al":      (0.85, 0.85, 0.85),  # aluminium → light grey
-    "steel":   (0.4,  0.4,  0.4),   # steel     → dark grey
-    "cfrp":    (0.15, 0.15, 0.15),  # composites→ near black
-    "default": (0.6,  0.6,  0.6),
-}
-
 
 def _infer_color(material_name: str) -> tuple:
     name_lower = material_name.lower()

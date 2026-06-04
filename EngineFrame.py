@@ -24,7 +24,7 @@ Blade-off containment (CS-E §25.903(d) approach):
   Containment check:  E_s  >  E_k × safety_factor
     E_k = ½ m v²_tip + ½ I ω²      [J] kinetic energy of released blade
     E_s = σ_avg × ε_f × V_casing   [J] strain energy absorbed to fracture
-    σ_avg = (yield_strength + ult_strength) / 2  (trapezoidal σ-ε approximation)
+    σ_avg = (yield_stress + ult_strength) / 2  (trapezoidal σ-ε approximation)
 """
 
 import math
@@ -33,7 +33,7 @@ from parapy.core  import Input, Attribute, Part
 from parapy.geom  import (
     GeomBase,
     Point, Polygon, RevolvedSolid,
-    XOY, rotate,
+    XOY, rotate, translate
 )
 
 from Flow_station import FlowStation
@@ -68,7 +68,7 @@ class EngineFrame(GeomBase):
     # ------------------------------------------------------------------
 
     #: str    Material name of the frame
-    material_name: str = Input("Ti-6Al-4V")
+    material_name: str = Input("Al-2024-T3")
 
     #: [m]    Metal sheet thickness
     sheet_thickness: float = Input(0.003)
@@ -173,7 +173,14 @@ class EngineFrame(GeomBase):
         Total kinetic energy of a released blade [J].
         E_k = ½ m v_tip² + ½ I ω²   (translational + rotational contributions)
         """
-        return 0.5 * self.blade_mass * self.blade_tip_radius * self.omega**2 + 0.5 * self.blade_inertia * self.omega**2
+        return 0.5 * self.blade_mass * (self.blade_tip_radius * self.omega)**2 + 0.5 * self.blade_inertia * self.omega**2
+
+    @Attribute
+    def mean_area_inner(self):
+        """
+        Wet area inside the casing, whose subject to blade-off stress
+        """
+        return 2 * math.pi * (self.casing_body.r_inlet_inner + self.casing_body.r_outlet_inner) / 2.0 * self.casing_body.length
 
     @Attribute
     def strain_energy_casing(self) -> float:
@@ -182,8 +189,11 @@ class EngineFrame(GeomBase):
         E_s = σ_avg × ε_f × V_casing
         σ_avg is the average flow stress (trapezoidal rule on the σ-ε curve).
         """
-        return (self.casing.material.yield_strength + self.casing.material.ultimate_tensile_strength) / 2.0 * self.casing.material.fracture_strain * self.casing_wall_volume
-
+        return (
+                (self.material.yield_stress + self.material.ultimate_tensile_strength) / 2.0
+                * self.material.fracture_strain
+                * self.mean_area_inner * self.sheet_thickness
+        )
     def is_contained(self) -> bool:
         """True when the casing can absorb a blade-off event with the required margin."""
         return self.strain_energy_casing > self.kinetic_energy_blade_off * self.safety_factor
@@ -220,6 +230,7 @@ class EngineFrame(GeomBase):
             material_name       = self.material_name,
             wall_thickness_inlet = self.inlet_wall_thickness,
             wall_thickness_outlet = self.casing_inlet_wall_thickness,
+            position              = self.position,
         )
 
     @Part
@@ -239,37 +250,39 @@ class EngineFrame(GeomBase):
             material_name           = self.material_name,
             wall_thickness_inlet    =self.casing_outlet_wall_thickness,
             wall_thickness_outlet   =self.nozzle_wall_thickness,
+            position                =translate(self.position, 'x', self.inlet_length + self.length_casing),
         )
 
 
-    @Part
+    @Attribute
     def casing_inflow(self):
         """Flow condition at the inlet of the casing,
            mainly defined as a helper part to simplify notation in
            casing duct definition."""
         return self.inlet_inflow.isentropic_trans(
-            target_type="temperature",
-            target_value= self.inlet_inflow.p_total * self.inlet_pressure_ratio,
-            isos_efficiency = self.inlet_isos_efficiency,
-            Mach_out = self.inlet_Mach_out,
+            target_type      ="temperature",
+            target_value     = self.inlet_inflow.p_total * self.inlet_pressure_ratio,
+            eta              = self.inlet_isos_efficiency,
+            Mach_out         = self.inlet_Mach_out,
         )
 
     @Part
     def casing_body(self):
         """Casing inherits from Duct class: builds a Revolved solid coherent with the other ducts."""
         return Duct(
-            inflow_conditions=self.casing_inflow,
-            length=self.inlet_length,
-            material_name=self.material_name,
+            inflow_conditions       =self.casing_inflow,
+            length                  =self.length_casing,
+            material_name           =self.material_name,
             #Mach_design=0.5,
-            Mach_out=self.nozzle_inflow.Mach,
-            pressure_ratio=self.nozzle_inflow.p_total / self.casing_inflow.p_total,
-            isos_efficiency=1,
-            station_out=6,
-            r_inlet_inner= self.inlet_duct.r_outlet_inner,
-            r_outlet_inner=self.nozzle_duct.r_inlet_inner,
-            wall_thickness_inlet=self.casing_inlet_wall_thickness,
-            wall_thickness_outlet=self.casing_outlet_wall_thickness,
+            Mach_out                =self.nozzle_inflow.Mach,
+            pressure_ratio          =self.nozzle_inflow.p_total / self.casing_inflow.p_total,
+            isos_efficiency         =1,
+            station_out             =6,
+            r_inlet_inner           = self.inlet_duct.r_outlet_inner,
+            r_outlet_inner          =self.nozzle_duct.r_inlet_inner,
+            wall_thickness_inlet    =self.casing_inlet_wall_thickness,
+            wall_thickness_outlet   =self.casing_outlet_wall_thickness,
+            position                =translate(self.position, 'x', self.inlet_length),
         )
 
     # ------------------------------------------------------------------
@@ -282,12 +295,71 @@ class EngineFrame(GeomBase):
         """Total frame mass: casing barrel + inlet duct + nozzle duct [kg]."""
         return self.casing_body.weight + self.inlet_duct.weight + self.nozzle_duct.weight
 
-    # ------------------------------------------------------------------
-    # Validation
-    # ------------------------------------------------------------------
+        # ------------------------------------------------------------------
+        # Validation
+        # ------------------------------------------------------------------
 
     def validate(self):
         warnings = []
+
+        # --- Blade-off analysis -------------------------------------------
+        if self.blade_mass <= 0.0:
+            warnings.append(
+                f"EngineFrame: blade_mass={self.blade_mass:.3f} kg must be > 0."
+            )
+        if self.blade_tip_radius <= 0.0:
+            warnings.append(
+                f"EngineFrame: blade_tip_radius={self.blade_tip_radius:.4f} m must be > 0."
+            )
+        if self.omega <= 0.0:
+            warnings.append(
+                f"EngineFrame: omega={self.omega:.1f} rad/s must be > 0."
+            )
+        if self.safety_factor < 1.5:
+            warnings.append(
+                f"EngineFrame: safety_factor={self.safety_factor:.2f} is below "
+                f"the CS-E §25.903(d) minimum of 1.5."
+            )
+        if not self.is_contained():
+            warnings.append(
+                f"EngineFrame: BLADE-OFF CONTAINMENT FAILED — "
+                f"containment_margin={self.containment_margin:.3f} "
+                f"(E_s={self.strain_energy_casing:.1f} J < "
+                f"E_k×SF={self.kinetic_energy_blade_off * self.safety_factor:.1f} J). "
+                f"Increase sheet_thickness or use a tougher material."
+            )
+
+        # --- Geometry consistency -----------------------------------------
+        if self.sheet_thickness <= 0.0:
+            warnings.append(
+                f"EngineFrame: sheet_thickness={self.sheet_thickness:.4f} m must be > 0."
+            )
+        if self.length_casing <= 0.0:
+            warnings.append(
+                f"EngineFrame: length_casing={self.length_casing:.3f} m must be > 0."
+            )
+
+        # --- Radius continuity: inlet exit → casing inlet -----------------
+        r_inlet_exit = self.inlet_duct.r_outlet_inner
+        r_casing_inlet = self.casing_body.r_inlet_inner
+        if abs(r_inlet_exit - r_casing_inlet) > 1e-4:
+            warnings.append(
+                f"EngineFrame: inner radius discontinuity at inlet/casing junction "
+                f"(inlet_exit={r_inlet_exit:.4f} m, casing_inlet={r_casing_inlet:.4f} m)."
+            )
+
+        # --- Radius continuity: casing outlet → nozzle inlet --------------
+        r_casing_exit = self.casing_body.r_outlet_inner
+        r_nozzle_inlet = self.nozzle_duct.r_inlet_inner
+        if abs(r_casing_exit - r_nozzle_inlet) > 1e-4:
+            warnings.append(
+                f"EngineFrame: inner radius discontinuity at casing/nozzle junction "
+                f"(casing_outlet={r_casing_exit:.4f} m, nozzle_inlet={r_nozzle_inlet:.4f} m)."
+            )
+
+        # --- Child component validation -----------------------------------
+        for child in (self.inlet_duct, self.casing_body, self.nozzle_duct):
+            warnings.extend(child.validate())
 
         return warnings
 
@@ -298,6 +370,7 @@ class EngineFrame(GeomBase):
 if __name__ == "__main__":
     from parapy.gui import display
 
+    # --- Inlet flow condition (station 1 — highlight face) ---
     station_1 = FlowStation(
         station_number = 1,
         fluid_type     = "air",
@@ -307,6 +380,7 @@ if __name__ == "__main__":
         Mach           = 0.25,
     )
 
+    # --- Nozzle inflow (station 6 — turbine exit) ---
     station_6 = FlowStation(
         station_number = 6,
         fluid_type     = "fuel_gas",
@@ -319,48 +393,77 @@ if __name__ == "__main__":
     frame = EngineFrame(
         inlet_inflow   = station_1,
         nozzle_inflow  = station_6,
-        length         = 2.0,
-        r_casing       = 0.35,
-        wall_thickness = 0.015,
-        # blade-off: moderately loaded fan blade
-        blade_mass       = 0.35,
-        blade_tip_radius = 0.30,
-        omega            = 1100.0,
-        blade_inertia    = 0.025,
+        # casing geometry
+        length_casing              = 1.0,
+        casing_inlet_wall_thickness  = 0.012,
+        casing_outlet_wall_thickness = 0.012,
+        # inlet duct
+        inlet_lip_profile          = "curved",
+        inlet_pressure_ratio       = 0.98,
+        inlet_isos_efficiency      = 0.95,
+        inlet_Mach_out             = 0.45,
+        inlet_length               = 0.55,
+        inlet_wall_thickness       = 0.012,
+        # nozzle duct
+        nozzle_pressure_ratio      = 0.97,
+        nozzle_isos_efficiency     = 0.96,
+        nozzle_Mach_out            = 1.20,
+        nozzle_length              = 0.45,
+        nozzle_wall_thickness      = 0.012,
+        p_ambient                  = 101325.0,
+        # material & structural
+        material_name              = "Ti-6Al-4V",
+        sheet_thickness            = 0.003,
+        safety_factor              = 1.5,
+        # blade-off (representative fan blade)
+        blade_mass                 = 1.5,
+        blade_tip_radius           = 0.28,
+        omega                      = 1200.0,
+        blade_inertia              = 0.02,
     )
 
     print("=" * 60)
     print("ENGINE FRAME SMOKE-TEST")
     print("=" * 60)
 
-    print("\n  [CASING GEOMETRY]")
-    print(f"    r_casing          : {frame.r_casing:.4f} m")
-    print(f"    casing_inner_r    : {frame.casing_inner_radius:.4f} m")
-    print(f"    wall_thickness    : {frame.wall_thickness:.4f} m")
-    print(f"    casing_wall_vol   : {frame.casing_wall_volume:.5f} m³")
-    print(f"    casing_weight     : {frame.casing_weight:.2f} kg")
-    print(f"    total_weight      : {frame.total_weight:.2f} kg")
-
-    print("\n  [BLADE-OFF ANALYSIS]")
-    print(f"    omega             : {frame.omega:.1f} rad/s")
-    print(f"    v_tip             : {frame.blade_tip_radius * frame.omega:.2f} m/s")
-    print(f"    E_k               : {frame.kinetic_energy_blade_off:.1f} J")
-    print(f"    E_s               : {frame.strain_energy_casing:.1f} J")
-    print(f"    E_k × SF          : {frame.kinetic_energy_blade_off * frame.safety_factor:.1f} J")
-    print(f"    containment_margin: {frame.containment_margin:.3f}")
-    print(f"    is_contained()    : {frame.is_contained()}")
-
     print("\n  [INLET DUCT]")
-    print(f"    p_total in        : {frame.inlet_duct.station_in.p_total:.2f} Pa")
-    print(f"    p_total out       : {frame.inlet_duct.station_out_part.p_total:.2f} Pa")
-    print(f"    weight            : {frame.inlet_duct.weight:.2f} kg")
-    print(f"    is_choked()       : {frame.inlet_duct.is_choked()}")
+    print(f"    p_total  in  : {frame.inlet_duct.station_in.p_total:.2f} Pa")
+    print(f"    p_total  out : {frame.inlet_duct.station_out_part.p_total:.2f} Pa")
+    print(f"    r_in (inner) : {frame.inlet_duct.r_inlet_inner:.4f} m")
+    print(f"    r_out(inner) : {frame.inlet_duct.r_outlet_inner:.4f} m")
+    print(f"    weight       : {frame.inlet_duct.weight:.2f} kg")
+    print(f"    is_choked()  : {frame.inlet_duct.is_choked()}")
+
+    print("\n  [CASING BODY]")
+    print(f"    p_total  in  : {frame.casing_body.station_in.p_total:.2f} Pa")
+    print(f"    p_total  out : {frame.casing_body.station_out_part.p_total:.2f} Pa")
+    print(f"    r_in (inner) : {frame.casing_body.r_inlet_inner:.4f} m")
+    print(f"    r_out(inner) : {frame.casing_body.r_outlet_inner:.4f} m")
+    print(f"    weight       : {frame.casing_body.weight:.2f} kg")
 
     print("\n  [NOZZLE DUCT]")
-    print(f"    p_total in        : {frame.nozzle_duct.station_in.p_total:.2f} Pa")
-    print(f"    p_total out       : {frame.nozzle_duct.station_out_part.p_total:.2f} Pa")
-    print(f"    thrust_coefficient: {frame.nozzle_duct.thrust_coefficient:.4f}")
-    print(f"    weight            : {frame.nozzle_duct.weight:.2f} kg")
+    print(f"    p_total  in  : {frame.nozzle_duct.station_in.p_total:.2f} Pa")
+    print(f"    p_total  out : {frame.nozzle_duct.station_out_part.p_total:.2f} Pa")
+    print(f"    r_in (inner) : {frame.nozzle_duct.r_inlet_inner:.4f} m")
+    print(f"    r_out(inner) : {frame.nozzle_duct.r_outlet_inner:.4f} m")
+    print(f"    thrust_coeff : {frame.nozzle_duct.thrust_coefficient:.4f}")
+    print(f"    weight       : {frame.nozzle_duct.weight:.2f} kg")
+    print(f"    is_choked()  : {frame.nozzle_duct.is_choked()}")
+
+    print("\n  [BLADE-OFF ANALYSIS]")
+    v_tip = frame.blade_tip_radius * frame.omega
+    print(f"    v_tip        : {v_tip:.2f} m/s")
+    print(f"    E_k          : {frame.kinetic_energy_blade_off:.1f} J")
+    print(f"    E_s          : {frame.strain_energy_casing:.1f} J")
+    print(f"    E_k × SF     : {frame.kinetic_energy_blade_off * frame.safety_factor:.1f} J")
+    print(f"    margin       : {frame.containment_margin:.3f}")
+    print(f"    is_contained : {frame.is_contained()}")
+
+    print("\n  [MASS BUDGET]")
+    print(f"    inlet_duct   : {frame.inlet_duct.weight:.2f} kg")
+    print(f"    casing_body  : {frame.casing_body.weight:.2f} kg")
+    print(f"    nozzle_duct  : {frame.nozzle_duct.weight:.2f} kg")
+    print(f"    frame_total  : {frame.frame_weight:.2f} kg")
 
     warnings = frame.validate()
     if warnings:
