@@ -237,7 +237,7 @@ class Duct(EngineComponent):
         Sheet-metal weight: wetted wall area * sheet thickness * density.
         Overrides EngineComponent.weight (which used solid volume * density).
         """
-        return self.wall_surface.area * self.sheet_thickness * self.density
+        return self.wall_surface.area * self.sheet_thickness * self.material.density
 
     # ------------------------------------------------------------------
     # Geometry — Part 3: body  (shape-agnostic, never overridden)
@@ -331,21 +331,20 @@ if __name__ == "__main__":
     # --- CONVERGENT duct: inner radius shrinks toward outlet ----------------
     duct_conv = Duct(
         inflow_conditions=inlet,
+        material_name="Al-2024-T3",
         Mach_design=0.5,
         Mach_out=0.45,
         pressure_ratio=0.98,
         isos_efficiency=0.92,
         station_out=3,
         r_inlet_inner=0.15,
-        r_inlet_outer=0.17,  # wall = 0.02 at inlet
         r_outlet_inner=0.08,
-        r_outlet_outer=0.11,  # wall = 0.03 at outlet — tapered wall
     )
 
     duct_div = Duct(
         inflow_conditions=inlet,
         length = 0.1,
-        density= 2800.0,
+        material_name= "Al-2024-T3",
         Mach_design=0.5,
         Mach_out=0.45,
         pressure_ratio=0.98,

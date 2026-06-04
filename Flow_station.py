@@ -27,7 +27,6 @@ class FlowStation(Base):
         """Engine Section area at the station [m^2]"""
         return (self.mass_flow * np.sqrt(self.R * self.T_total)) / (self.p_total * self.Mach * np.sqrt(self.gamma) * (1 + ((self.gamma - 1) / 2) * self.Mach**2)**(-(self.gamma+1)/(2* (self.gamma -1))))
 
-
     @Attribute
     def cp(self):
         """Specific heat at constant pressure [J/kg*K]"""

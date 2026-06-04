@@ -3,11 +3,11 @@
 Abstract base class EngineComponent.
 Both Duct and Turbomachine inherit from this class.
 """
-
 from parapy.core import Base, Input, Attribute, Part
 from parapy.geom import GeomBase, Position, XOY, Cylinder, rotate
 
 from Flow_station import FlowStation
+from Material import Material
 
 
 class EngineComponent(GeomBase):
@@ -43,8 +43,8 @@ class EngineComponent(GeomBase):
     #: [m]  radius of the component
     radius: float = Input(0.2)
 
-    #: [kg/m^3]  density of the component
-    density: float = Input(7850)
+    #: str  material name
+    material_name: str = Input("Steel-4340")
 
     # ----------------------------------------------------------------------
     # Outlet station - default is computed for an isoentropic transformation
@@ -97,6 +97,15 @@ class EngineComponent(GeomBase):
         )
 
     # --------------------------------------------------------------------------------------------
+    # Material @Part - to model Component's density and strain stresses
+    # --------------------------------------------------------------------------------------------
+
+    @Part
+    def material(self):
+        return Material(
+            material_name=self.material_name
+        )
+    # --------------------------------------------------------------------------------------------
     # Geometric features - @Input so they can be changed from the inputs after high-level analysis
     # --------------------------------------------------------------------------------------------
 
@@ -129,7 +138,7 @@ class EngineComponent(GeomBase):
 
     @Attribute
     def weight(self):
-        return self.volume*self.density
+        return self.volume*self.material.density
 
     # ------------------------------------------------------------------
     # Attributes (shortcuts into the two stations)

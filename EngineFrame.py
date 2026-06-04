@@ -62,7 +62,7 @@ class EngineFrame(GeomBase):
     # ------------------------------------------------------------------
 
     #: [m]       Total axial length of the casing barrel
-    length: float = Input(2.0)
+    length_casing: float = Input(2.0)
 
     #: [m]       Outer radius of the cylindrical casing
     r_casing: float = Input(0.35)
@@ -70,27 +70,18 @@ class EngineFrame(GeomBase):
     #: [m]       Casing wall thickness
     wall_thickness: float = Input(0.012)
 
-    #: [kg/m³]   Casing material density  (default: Ti-6Al-4V)
-    density: float = Input(4430.0)
-
     # ------------------------------------------------------------------
     # Material properties — blade-off containment
     # ------------------------------------------------------------------
 
-    #: [Pa]   0.2 % proof / yield strength of casing material
-    yield_strength: float = Input(880e6)
-
-    #: [Pa]   Ultimate tensile strength
-    ult_strength: float = Input(950e6)
-
-    #: [-]    Engineering fracture strain (elongation at fracture)
-    fracture_strain: float = Input(0.14)
+    #: str    Material name of the frame
+    material_name: str = Input("Ti-6Al-4V")
 
     #: [-]    Containment safety factor  (typical regulatory requirement ≥ 1.5)
     safety_factor: float = Input(1.5)
 
     # ------------------------------------------------------------------
-    # Blade-off kinetic inputs
+    # Blade-off kinetic inputs <- will be replaced with actual inputs from solid Blades
     # ------------------------------------------------------------------
 
     #: [kg]      Mass of one released blade
@@ -228,8 +219,8 @@ class EngineFrame(GeomBase):
         E_s = σ_avg × ε_f × V_casing
         σ_avg is the average flow stress (trapezoidal rule on the σ-ε curve).
         """
-        sigma_avg = (self.yield_strength + self.ult_strength) / 2.0
-        return sigma_avg * self.fracture_strain * self.casing_wall_volume
+        sigma_avg = (self.casing.material.yield_strength + self.casing.material.ultimate_tensile_strength) / 2.0
+        return sigma_avg * self.casing.material.fracture_strain * self.casing_wall_volume
 
     def is_contained(self) -> bool:
         """True when the casing can absorb a blade-off event with the required margin."""
@@ -252,7 +243,7 @@ class EngineFrame(GeomBase):
     @Attribute
     def casing_weight(self) -> float:
         """Main casing barrel mass [kg]."""
-        return self.casing_wall_volume * self.density
+        return self.casing_wall_volume * self.material.density
 
     @Attribute
     def total_weight(self) -> float:
@@ -368,15 +359,15 @@ class EngineFrame(GeomBase):
                 f"— no structural margin over the blade kinetic energy."
             )
 
-        if self.yield_strength >= self.ult_strength:
+        if self.casing.material.yield_strength >= self.ult_strength:
             warnings.append(
-                f"EngineFrame: yield_strength={self.yield_strength/1e6:.1f} MPa "
+                f"EngineFrame: yield_strength={self.casing.material.yield_strength/1e6:.1f} MPa "
                 f">= ult_strength={self.ult_strength/1e6:.1f} MPa — check material data."
             )
 
-        if not (0.0 < self.fracture_strain <= 1.0):
+        if not (0.0 < self.casing.material.fracture_strain <= 1.0):
             warnings.append(
-                f"EngineFrame: fracture_strain={self.fracture_strain:.3f} outside (0, 1]."
+                f"EngineFrame: fracture_strain={self.casing.material.fracture_strain:.3f} outside (0, 1]."
             )
 
         if not self.is_contained():

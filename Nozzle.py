@@ -45,19 +45,55 @@ class Nozzle(Duct):
     # Inputs — nozzle type and ambient reference
     # ------------------------------------------------------------------
 
-    #: bool  True → convergent-divergent geometry and supersonic exit logic.
-    is_convergent_divergent: bool = Input(False)
-
     #: [Pa]  Ambient static pressure — reference for thrust coefficient.
     p_ambient: float = Input(101325.0)
 
+    @Input
+    #: bool  True → convergent-divergent geometry and supersonic exit logic.
+    def is_convergent_divergent(self):
+        return self.Mach_out >= 1
+
     # ------------------------------------------------------------------
-    # C-D throat geometry inputs
+    # Design choked throat condition
     # ------------------------------------------------------------------
 
-    #: [-]  Throat-to-inlet area ratio (A_throat / A_in). Only used when
-    #:      is_convergent_divergent=True. Typical: 0.6–0.85.
-    throat_area_ratio: float = Input(0.8)
+    @Attribute
+    def Mach_out_design(self):
+        """
+        Calculates the ideally expanded exit Mach number where
+        exit static pressure equals ambient pressure.
+        """
+        return math.sqrt((2 / (self.inflow_conditions.gamma - 1)) * ((self.inflow_conditions.p_total / self.p_ambient) ** ((self.inflow_conditions.gamma - 1) / self.inflow_conditions.gamma) - 1))
+
+    @Attribute
+    def area_throat(self) -> float:
+        """
+        Theoretical aerodynamic throat area (A*) where the flow is choked (Mach = 1).
+        """
+        return FlowStation(p_total= self.inflow_conditions.p_total*self.pressure_ratio,
+                           T_total= self.inflow_conditions.T_total,
+                           mass_flow= self.inflow_conditions.mass_flow,
+                           fluid_type= self.inflow_conditions.fluid_type,
+                           Mach= {True: 1, False: self.Mach_out_design}[self.is_choked() or self.is_convergent_divergent]).area
+
+    @Attribute
+    def area_out(self) -> float:
+        """
+        Physical exit area required to perfectly expand the flow to cruise conditions.
+        """
+        return FlowStation(p_total= self.p_ambient,
+                           T_total= self.inflow_conditions.T_total,
+                           mass_flow= self.inflow_conditions.mass_flow,
+                           fluid_type= self.inflow_conditions.fluid_type,
+                           Mach= self.Mach_out_design).area
+
+    @Attribute
+    def throat_area_ratio(self) -> float:
+        """
+        The isentropic area ratio (A_exit / A_throat) required to prevent
+        overexpansion or underexpansion.
+        """
+        return self.area_out / self.area_throat
 
     @Input
     def x_throat(self) -> float:
@@ -68,15 +104,6 @@ class Nozzle(Duct):
     def r_throat_inner(self) -> float:
         """Inner radius at throat [m]."""
         return math.sqrt(self.area_throat / math.pi)
-
-    # ------------------------------------------------------------------
-    # Derived throat attribute
-    # ------------------------------------------------------------------
-
-    @Attribute
-    def area_throat(self) -> float:
-        """Throat flow area [m²] = throat_area_ratio × area_in."""
-        return self.area_in * self.throat_area_ratio
 
     # ------------------------------------------------------------------
     # Override outlet_flow — C-D exit at design Mach_out (may be > 1)
@@ -261,7 +288,6 @@ if __name__ == "__main__":
         Mach_out               = 1.60,
         station_out            = 7,
         p_ambient              = 101325.0,
-        throat_area_ratio      = 0.75,
         length                 = 0.55,
     )
 
