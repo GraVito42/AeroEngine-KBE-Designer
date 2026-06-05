@@ -56,6 +56,9 @@ class Duct(EngineComponent):
     #: -        outlet pressure ratio choked vs unchoked
     choking_losses: float = Input(0.99)
 
+    #: [m]  Axial offset from the global origin — set by parent assembly.
+    x_offset: float = Input(0.0)
+
     # ------------------------------------------------------------------
     # Derived thermodynamic attributes
     # ------------------------------------------------------------------
@@ -192,10 +195,10 @@ class Duct(EngineComponent):
         """
         return Polygon(
             points=[
-                Point(0.0,         self.r_inlet_inner,  0.0),
-                Point(0.0,         self.r_inlet_outer,  0.0),
-                Point(self.length, self.r_outlet_outer, 0.0),
-                Point(self.length, self.r_outlet_inner, 0.0),
+                Point(self.x_offset, self.r_inlet_inner, 0.0),
+                Point(self.x_offset, self.r_inlet_outer, 0.0),
+                Point(self.x_offset + self.length, self.r_outlet_outer, 0.0),
+                Point(self.x_offset + self.length, self.r_outlet_inner, 0.0),
             ],
             hidden=True,
         )
@@ -213,8 +216,8 @@ class Duct(EngineComponent):
         for RevolvedSurface, which requires a single-edge wire.
         """
         return LineSegment(
-            start=Point(0.0, self.r_inlet_outer, 0.0),
-            end=Point(self.length, self.r_outlet_outer, 0.0),
+            start=Point(self.x_offset, self.r_inlet_outer, 0.0),
+            end=Point(self.x_offset + self.length, self.r_outlet_outer, 0.0),
             hidden=True,
         )
 
@@ -253,12 +256,11 @@ class Duct(EngineComponent):
         Subclasses inherit volume and weight for free.
         """
         return RevolvedSolid(
-            built_from = self.wall_profile,
-            center     = Point(0.0, 0.0, 0.0),
-            direction  = (1.0, 0.0, 0.0),   # local X = axial
-            angle      = 2 * math.pi,
+            built_from=self.wall_profile,
+            center=Point(0.0, 0.0, 0.0),
+            direction=(1.0, 0.0, 0.0),
+            angle=2 * math.pi,
             color=self.material.color,
-            position=self.position,
         )
 
     # ----------------------------------------------------------------------------------
@@ -270,17 +272,32 @@ class Duct(EngineComponent):
     @Attribute
     def outer_envelope_points(self):
         """Outer-wall meridian points only, inlet→outlet, for the envelope solid. Duct base: straight outer wall P2→P3. Subclasses (Inlet) override with their curved outer contour."""
-        return [Point(0.0, self.r_inlet_outer, 0.0), Point(self.length, self.r_outlet_outer, 0.0)]
+        return [
+            Point(self.x_offset, self.r_inlet_outer, 0.0),
+            Point(self.x_offset + self.length, self.r_outlet_outer, 0.0),
+        ]
 
     @Part
     def envelope_profile(self):
         """Closed wire: outer wall + closure down to the axis (y=0) at both ends. Revolved, this is the full swept envelope of the duct (bore included)."""
-        return Polygon(points=self.outer_envelope_points + [Point(self.length, 0.0, 0.0), Point(0.0, 0.0, 0.0)], hidden=True)
+        return Polygon(
+            points=self.outer_envelope_points + [
+                Point(self.x_offset + self.length, 0.0, 0.0),
+                Point(self.x_offset, 0.0, 0.0),
+            ],
+            hidden=True,
+        )
 
     @Part
     def envelope_solid(self):
         """Full envelope solid (outer contour revolved to the axis). Its volume is the total swept ingombro, exact for any outer-wall shape. NOT shown."""
-        return RevolvedSolid(built_from=self.envelope_profile, center=Point(0.0, 0.0, 0.0), direction=(1.0, 0.0, 0.0), angle=2 * math.pi, hidden=True)
+        return RevolvedSolid(
+            built_from=self.envelope_profile,
+            center=Point(0.0, 0.0, 0.0),
+            direction=(1.0, 0.0, 0.0),
+            angle=2 * math.pi,
+            hidden=True,
+        )
 
     @Attribute
     def volume(self) -> float:

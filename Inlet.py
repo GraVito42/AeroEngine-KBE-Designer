@@ -116,7 +116,7 @@ class Inlet(Duct):
             t = (math.pi / 2.0) * i / self.n_lip_pts
             x = a * (1.0 - math.cos(t) ** exp)
             y = self.r_highlight + sign * b * (math.sin(t) ** exp)
-            pts.append(Point(x, y, 0.0))
+            pts.append(Point(self.x_offset + x, y, 0.0))
         return pts
 
     @staticmethod
@@ -151,7 +151,7 @@ class Inlet(Duct):
            theta=0 → outer, theta=pi → inner, theta=pi/2 → forwardmost (-lip_depth).
            """
         return [Point(
-            -self.lip_radius * math.sin(math.pi * i / (2 * self.n_lip_pts)),
+            self.x_offset -self.lip_radius * math.sin(math.pi * i / (2 * self.n_lip_pts)),
             self.r_highlight + (
                 (self.r_inlet_outer - self.r_highlight) if i <= (2 * self.n_lip_pts) // 2
                 else (self.r_highlight - self.r_inlet_inner)
@@ -166,22 +166,31 @@ class Inlet(Duct):
     def profile_points(self):
         """Closed meridian loop, NO auto-cap across the bore. Each branch starts/ends at the outlet plane (x=length); force_closure adds only the short outlet wall-thickness segment. Front nose is sealed (lip), outlet end stays an open annular face."""
         return {
-            "curved": (self.wall_points(Point(self.length, self.r_outlet_inner, 0.0), self.inner_lip_points[-1],
-                                        self.n_wall)[:-1]
-                       + list(reversed(self.inner_lip_points))
-                       + self.outer_lip_points[1:]
-                       + self.wall_points(self.outer_lip_points[-1], Point(self.length, self.r_outlet_outer, 0.0),
-                                          self.n_wall)[1:]),
+            "curved": (
+                        self.wall_points(Point(self.x_offset + self.length, self.r_outlet_inner, 0.0),
+                                         self.inner_lip_points[-1], self.n_wall)[:-1]
+                        + list(reversed(self.inner_lip_points))
+                        + self.outer_lip_points[1:]
+                        + self.wall_points(self.outer_lip_points[-1],
+                                           Point(self.x_offset + self.length, self.r_outlet_outer, 0.0),
+                                           self.n_wall)[1:]
+                        + [Point(self.x_offset + self.length, self.r_outlet_inner, 0.0)]
+),
             "bellmouth": (
-                        self.wall_points(Point(self.length, self.r_outlet_inner, 0.0), self.bellmouth_points[-1],
-                                         self.n_wall)[:-1]
+                        self.wall_points(Point(self.x_offset + self.length, self.r_outlet_inner, 0.0),
+                                         self.bellmouth_points[-1], self.n_wall)[:-1]
                         + list(reversed(self.bellmouth_points))
-                        + self.wall_points(self.bellmouth_points[0], Point(self.length, self.r_outlet_outer, 0.0),
-                                           self.n_wall)[1:]),
-            "polygonal": [Point(self.length, self.r_outlet_inner, 0.0),
-                          Point(0.0, self.r_inlet_inner, 0.0),
-                          Point(0.0, self.r_inlet_outer, 0.0),
-                          Point(self.length, self.r_outlet_outer, 0.0)],
+                        + self.wall_points(self.bellmouth_points[0],
+                                           Point(self.x_offset + self.length, self.r_outlet_outer, 0.0),
+                                           self.n_wall)[1:]
+                        + [Point(self.x_offset + self.length, self.r_outlet_inner, 0.0)]  # chiusura esplicita
+                    ),
+            "polygonal": [
+                Point(self.x_offset + self.length, self.r_outlet_inner, 0.0),
+                Point(self.x_offset, self.r_inlet_inner, 0.0),
+                Point(self.x_offset, self.r_inlet_outer, 0.0),
+                Point(self.x_offset + self.length, self.r_outlet_outer, 0.0),
+            ],
         }[self.lip_profile_type]
 
     # ------------------------------------------------------------------
@@ -210,9 +219,14 @@ class Inlet(Duct):
     def outer_envelope_points(self):
         """Outer contour of the inlet, front nose → cowl → outlet_outer. Curved/bellmouth use the lip's forwardmost point as the front; polygonal falls back to the straight outer wall."""
         return {
-            "curved": (self.outer_lip_points + self.wall_points(self.outer_lip_points[-1], Point(self.length, self.r_outlet_outer, 0.0), self.n_wall)[1:]),
-            "bellmouth": (self.bellmouth_points + self.wall_points(self.bellmouth_points[0], Point(self.length, self.r_outlet_outer, 0.0), self.n_wall)[1:]),
-            "polygonal": [Point(0.0, self.r_inlet_outer, 0.0), Point(self.length, self.r_outlet_outer, 0.0)],
+            "curved": (self.outer_lip_points + self.wall_points(self.outer_lip_points[-1],
+                                                                Point(self.x_offset + self.length, self.r_outlet_outer,
+                                                                      0.0), self.n_wall)[1:]),
+            "bellmouth": (self.bellmouth_points + self.wall_points(self.bellmouth_points[0],
+                                                                   Point(self.x_offset + self.length,
+                                                                         self.r_outlet_outer, 0.0), self.n_wall)[1:]),
+            "polygonal": [Point(self.x_offset, self.r_inlet_outer, 0.0),
+                          Point(self.x_offset + self.length, self.r_outlet_outer, 0.0)],
         }[self.lip_profile_type]
 
     # ------------------------------------------------------------------

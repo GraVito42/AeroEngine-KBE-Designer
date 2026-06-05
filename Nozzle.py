@@ -194,18 +194,18 @@ class Nozzle(Duct):
         """
         if self.is_convergent_divergent:
             return [
-                Point(0.0,           self.r_inlet_inner,  0.0),
-                Point(0.0,           self.r_inlet_outer,  0.0),
-                Point(self.length,   self.r_outlet_outer, 0.0),
-                Point(self.length,   self.r_outlet_inner, 0.0),
-                Point(self.x_throat, self.r_throat_inner, 0.0),
+                Point(self.x_offset, self.r_inlet_inner, 0.0),
+                Point(self.x_offset, self.r_inlet_outer, 0.0),
+                Point(self.x_offset + self.length, self.r_outlet_outer, 0.0),
+                Point(self.x_offset + self.length, self.r_outlet_inner, 0.0),
+                Point(self.x_offset + self.x_throat, self.r_throat_inner, 0.0),
             ]
         else:
             return [
-                Point(0.0,         self.r_inlet_inner,  0.0),
-                Point(0.0,         self.r_inlet_outer,  0.0),
-                Point(self.length, self.r_outlet_outer, 0.0),
-                Point(self.length, self.r_outlet_inner, 0.0),
+                Point(self.x_offset, self.r_inlet_inner, 0.0),
+                Point(self.x_offset, self.r_inlet_outer, 0.0),
+                Point(self.x_offset + self.length, self.r_outlet_outer, 0.0),
+                Point(self.x_offset + self.length, self.r_outlet_inner, 0.0),
             ]
 
     @Part
