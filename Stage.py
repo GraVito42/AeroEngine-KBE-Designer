@@ -72,7 +72,14 @@ class Stage(GeomBase):
     """
 
     axial_gap = Input(0.010)
-    """Axial clearance between the two blade rows [m]."""
+    """Axial clearance between the two blade rows within the stage [m]."""
+
+    stage_axial_offset = Input(0.0)
+    """X offset [m] of this whole stage's leading edge along the engine axis.
+    Set by the parent Turbomachine to stack consecutive stages. It is added to
+    BOTH rotor_axial_offset and stator_axial_offset, because Blade builds its
+    geometry from absolute coordinates (via Blade.axial_offset): a parent
+    position frame would NOT translate the blades, but this offset does."""
 
     n_pts = Input(60)
     """Resampling resolution passed to Blade."""
@@ -162,25 +169,29 @@ class Stage(GeomBase):
 
     @Attribute
     def rotor_axial_offset(self):
-        """Axial X offset of the rotor LE [m].
+        """Absolute X offset of the rotor LE [m], including stage position.
 
-        Compressor: rotor is first (offset = 0).
-        Turbine:    rotor is second (offset = stator chord + gap).
+        Compressor: rotor is first (row-local offset = 0).
+        Turbine:    rotor is second (row-local offset = stator chord + gap).
+        stage_axial_offset stacks this stage behind previous ones.
         """
-        return {'compressor': 0.0,
-                'turbine':    self.stator_mean_axial_chord + self.axial_gap
-                }[self.stage_type]
+        row_local = {'compressor': 0.0,
+                     'turbine':    self.stator_mean_axial_chord + self.axial_gap
+                     }[self.stage_type]
+        return self.stage_axial_offset + row_local
 
     @Attribute
     def stator_axial_offset(self):
-        """Axial X offset of the stator LE [m].
+        """Absolute X offset of the stator LE [m], including stage position.
 
-        Compressor: stator is second (offset = rotor chord + gap).
-        Turbine:    stator is first (offset = 0).
+        Compressor: stator is second (row-local offset = rotor chord + gap).
+        Turbine:    stator is first (row-local offset = 0).
+        stage_axial_offset stacks this stage behind previous ones.
         """
-        return {'compressor': self.rotor_mean_axial_chord + self.axial_gap,
-                'turbine':    0.0
-                }[self.stage_type]
+        row_local = {'compressor': self.rotor_mean_axial_chord + self.axial_gap,
+                     'turbine':    0.0
+                     }[self.stage_type]
+        return self.stage_axial_offset + row_local
 
     @Attribute
     def rotor_solidity(self):
@@ -246,7 +257,6 @@ class Stage(GeomBase):
 if __name__ == '__main__':
     from parapy.gui import display
 
-    # Minimal cambered NACA-style profile for quick visualisation
     def _profile(n=30):
         suc = [(i / (n-1), 0.06 * math.sin(math.pi * i / (n-1))) for i in range(n)]
         prs = [(i / (n-1), -0.06 * math.sin(math.pi * i / (n-1))) for i in range(n)]
@@ -272,16 +282,18 @@ if __name__ == '__main__':
         stator_pitch_angles   = [58.6, 60.4, 61.5],
         stator_n_blades       = 25,
         # layout
-        axial_gap = 0.001,
-        n_pts     = 40,          # lower res for faster smoke test
-        label     = 'stage_1',
-        stage_type      = 'compressor'
+        axial_gap          = 0.001,
+        stage_axial_offset = 0.0,
+        n_pts              = 40,
+        label              = 'stage_1',
+        stage_type         = 'compressor',
     )
 
     print(f"rotor  blades   = {stage.rotor_n_blades}, "
           f"angle step = {stage.rotor_angle_step_deg:.2f} deg")
     print(f"stator blades   = {stage.stator_n_blades}, "
           f"angle step = {stage.stator_angle_step_deg:.2f} deg")
+    print(f"rotor  X offset = {stage.rotor_axial_offset*1000:.1f} mm")
     print(f"stator X offset = {stage.stator_axial_offset*1000:.1f} mm")
     print(f"rotor  solidity = {stage.rotor_solidity:.3f}")
     print(f"stator solidity = {stage.stator_solidity:.3f}")
