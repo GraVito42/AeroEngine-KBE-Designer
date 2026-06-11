@@ -68,12 +68,41 @@ class Turbomachine(EngineComponent, GeomBase):
     flow_coeff    = Input(0.5)
     loading_coeff = Input(1.0)
 
-    blade_axial_chords = Input([0.03, 0.04])
-    """Axial chords [m] passed to MEANGEN (one value per blade row per stage)."""
+    blade_axial_chords = Input(None)
+    """Axial chords [m] per blade row [rotor, stator].
+    If None, estimated from design_radius and blade_AR via blade_axial_chords_estimated.
+    Override with an explicit [c_rotor, c_stator] list to bypass the estimate."""
+
+    blade_AR = Input(3.0)
+    """Blade aspect ratio (span / chord). Used when blade_axial_chords is None
+    to estimate axial chords from design_radius. Typical: 2-4 compressor, 2-3 turbine."""
+
+    mid_chord_fraction = Input(0.40)
+    """Ratio of axial chord to true chord (cos of stagger angle approximation).
+    Typical: 0.35-0.50. Used to convert span/AR -> axial chord."""
 
     row_gap   = Input(0.25)   # blade-row gap as fraction of axial chord
     stage_gap = Input(0.50)   # inter-stage gap as fraction of axial chord
-    twist     = Input(0)
+
+    frac_twist = Input(1.0)
+    """Blade twist option for MEANGEN FRAC_TWIST.
+    1.0 = full free-vortex (aero-optimal, twisted blades).
+    0.0 = prismatic blade (manufacturing-friendly, no twist).
+    Values between 0 and 1 give a controlled-vortex design."""
+
+    rotor_t_over_c  = Input(0.05)
+    """Rotor max thickness-to-chord ratio t/c. Typical: 0.04-0.08."""
+
+    stator_t_over_c = Input(0.05)
+    """Stator max thickness-to-chord ratio t/c. Typical: 0.04-0.08."""
+
+    rotor_x_tmax  = Input(0.40)
+    """Rotor: axial location of max thickness as fraction of axial chord.
+    Forward loading (0.35-0.45) matches turbine/compressor rotor aerodynamics."""
+
+    stator_x_tmax = Input(0.50)
+    """Stator: axial location of max thickness as fraction of axial chord.
+    Mid-chord (0.45-0.55) suits symmetric diffusing stator geometry."""
 
     gas_constant = Input(287.15)
     """Specific gas constant R [J/(kg.K)].
@@ -119,7 +148,68 @@ class Turbomachine(EngineComponent, GeomBase):
         return self.gas_constant
 
     @Attribute
+    def blade_axial_chords_estimated(self):
+        """Estimate axial chords from design_radius and blade_AR.
+
+        Geometry chain:
+          annulus_height ≈ design_radius * 0.30  (hub-to-tip ~ 70% of r_m, rough)
+          chord          = annulus_height / blade_AR
+          c_ax           = chord * mid_chord_fraction
+
+        This is a bootstrap estimate — after a first MEANGEN run the real chords
+        come from stagen.dat via MeagenParser and override this in Stage.
+        The 0.30 factor gives a hub/tip ratio of ~0.70 which is typical for the
+        first stage of an HPC. Override blade_axial_chords explicitly if needed.
+        """
+        h_estimate = self.design_radius * 0.30
+        c_ax = (h_estimate / self.blade_AR) * self.mid_chord_fraction
+        return [round(c_ax, 4), round(c_ax * 1.10, 4)]   # stator ~10% longer than rotor
+
+    @Attribute
+    def effective_axial_chords(self):
+        """Active axial chord values passed to MEANGEN.
+
+        Returns blade_axial_chords if the user set it explicitly (not None),
+        otherwise falls back to the aspect-ratio-based estimate.
+        """
+        return self.blade_axial_chords if self.blade_axial_chords is not None \
+            else self.blade_axial_chords_estimated
+
+    @Attribute
     def axial_gap(self):
+        """Metric gap between the two rows in a Stage [m]."""
+        return self.row_gap * self.effective_axial_chords[-1]
+
+    @Attribute
+    def deviation_angles(self):
+        """Estimated row deviation angles [deg] — simplified Ainley-Mathieson.
+
+        Returns [dev_row1, dev_row2].
+        Compressor: row1=rotor, row2=stator.
+        Turbine:    row1=stator, row2=rotor.
+
+        Compressor:  delta ≈ 1.0 + 0.5 * psi  (light loading -> small deviation)
+        Turbine:     delta ≈ 2.0 + max(0, psi - 1.5)  (high loading -> more underturning)
+        Both rows assumed equal at meanline design; acceptable for preliminary design.
+        """
+        return {
+            'compressor': [round(1.0 + 0.5 * self.loading_coeff, 2),
+                           round(1.0 + 0.5 * self.loading_coeff, 2)],
+            'turbine':    [round(2.0 + max(0.0, self.loading_coeff - 1.5), 2),
+                           round(2.0 + max(0.0, self.loading_coeff - 1.5), 2)],
+        }[self.machine_type]
+
+    @Attribute
+    def incidence_angles(self):
+        """Estimated row incidence angles [deg] — design-point near-zero.
+
+        Negative = suction-side incidence (MEANGEN sign convention).
+        -1.0 deg is a small suction-side bias that reduces leading-edge
+        separation at design point; consistent with Multall tutorial guidance.
+        """
+        return [-1.0, -1.0]
+
+
         """ Metric gap between the two rows in a Stage [m]"""
         return self.row_gap*self.blade_axial_chords[-1]
 
@@ -147,11 +237,17 @@ class Turbomachine(EngineComponent, GeomBase):
             flow_coeff    = self.flow_coeff,
             loading_coeff = self.loading_coeff,
             design_radius = self.design_radius,
-            axial_chords  = self.blade_axial_chords,
+            axial_chords  = self.effective_axial_chords,
             row_gap       = self.row_gap,
             stage_gap     = self.stage_gap,
             eta_guess     = self.isos_efficiency,
-            twist         = self.twist,
+            frac_twist    = self.frac_twist,
+            deviation     = self.deviation_angles,
+            incidence     = self.incidence_angles,
+            rotor_t_over_c  = self.rotor_t_over_c,
+            stator_t_over_c = self.stator_t_over_c,
+            rotor_x_tmax    = self.rotor_x_tmax,
+            stator_x_tmax   = self.stator_x_tmax,
         )
 
     # ------------------------------------------------------------------
@@ -355,7 +451,7 @@ if __name__ == '__main__':
         inflow_conditions=inlet,
         pressure_ratio=4.0,
         isos_efficiency=0.90,
-        n_stages=1,
+        n_stages=3,
         stage_gap = 1,
         row_gap = 0.5,
         rpm=1200.0,

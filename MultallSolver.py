@@ -32,7 +32,9 @@ from parapy.core import Base, Input, Attribute, action
 # Module-level helpers (callable without a class instance)
 # ---------------------------------------------------------------------------
 
-def _generate_tail(n_stages, turbo_typ='C', nosect=3, tkmax=0.06, xtkmax=0.50):
+def _generate_tail(n_stages, turbo_typ='C', nosect=3,
+                   rotor_t_over_c=0.05, rotor_x_tmax=0.40,
+                   stator_t_over_c=0.05, stator_x_tmax=0.50):
     """Generate the meangen.in tail section for n_stages stages.
 
     Row order in the ANSTK block is machine-type dependent:
@@ -45,6 +47,16 @@ def _generate_tail(n_stages, turbo_typ='C', nosect=3, tkmax=0.06, xtkmax=0.50):
       - ANSOUT (Y)
       - ANSTK blocks: stage-1 row-1 defines thickness (N + section lines),
         row-2 reuses (Y); all rows in stages 2..n_stages reuse (Y).
+
+    Parameters
+    ----------
+    n_stages : int
+    turbo_typ : str  'C' or 'T'
+    nosect : int  number of spanwise blade sections (default 3: hub/mid/tip)
+    rotor_t_over_c : float  rotor max t/c ratio
+    rotor_x_tmax   : float  rotor axial location of max thickness (fraction of chord)
+    stator_t_over_c : float  stator max t/c ratio
+    stator_x_tmax   : float  stator axial location of max thickness
     """
     pad  = ' ' * 23
     lpad = ' ' * 4
@@ -67,21 +79,28 @@ def _generate_tail(n_stages, turbo_typ='C', nosect=3, tkmax=0.06, xtkmax=0.50):
     # ANSTK — row order: compressor = rotor first; turbine = stator first
     if turbo_typ.upper() == 'C':
         row1_label, row2_label = 'ROTOR ', 'STATOR'
+        row1_tk, row1_xtk = rotor_t_over_c,  rotor_x_tmax
+        row2_tk, row2_xtk = stator_t_over_c, stator_x_tmax
     else:
         row1_label, row2_label = 'STATOR', 'ROTOR '
+        row1_tk, row1_xtk = stator_t_over_c, stator_x_tmax
+        row2_tk, row2_xtk = rotor_t_over_c,  rotor_x_tmax
 
-    # Stage 1, row 1 — define thickness
+    # Stage 1, row 1 — define thickness per section
     lines.append(f'N     {row1_label} No.  1  SET ANSTK = "N" TO DEFINE NEW BLADE SECTIONS\n')
     for sec in range(1, nosect + 1):
-        lines.append(f'{lpad}{tkmax:8.4f}  {xtkmax:8.4f}'
+        lines.append(f'{lpad}{row1_tk:8.4f}  {row1_xtk:8.4f}'
                      f'         MAX THICKNESS AND ITS LOCATION FOR '
                      f'{row1_label}  1 SECTION No.  {sec}\n')
 
-    # Stage 1, row 2 — reuse
-    lines.append(f'Y     {row2_label} No.   1  SET ANSTK = "Y" TO USE THE SAME  '
-                 f'BLADE SECTIONS AS THE LAST STAGE\n')
+    # Stage 1, row 2 — define thickness per section (different from row 1)
+    lines.append(f'N     {row2_label} No.   1  SET ANSTK = "N" TO DEFINE NEW BLADE SECTIONS\n')
+    for sec in range(1, nosect + 1):
+        lines.append(f'{lpad}{row2_tk:8.4f}  {row2_xtk:8.4f}'
+                     f'         MAX THICKNESS AND ITS LOCATION FOR '
+                     f'{row2_label}   1 SECTION No.  {sec}\n')
 
-    # Stages 2..n_stages — both rows reuse
+    # Stages 2..n_stages — both rows reuse stage-1 sections
     for stg in range(2, n_stages + 1):
         lines.append(f'Y     {row1_label} No.  {stg}  SET ANSTK = "Y" TO USE THE SAME  '
                      f'BLADE SECTIONS AS THE LAST STAGE\n')
@@ -108,7 +127,8 @@ def write_meangen_in(work_dir, meangen_input):
     meangen_input : dict
         Keys: turbo_typ, rgas, gamma, poin, toin, n_stages, rpm, mass_flow,
         reaction, flow_coeff, loading_coeff, design_radius, axial_chords,
-        row_gap, stage_gap, eta_guess.
+        row_gap, stage_gap, eta_guess, frac_twist, deviation, incidence,
+        rotor_t_over_c, stator_t_over_c, rotor_x_tmax, stator_x_tmax.
 
     Returns
     -------
@@ -121,6 +141,12 @@ def write_meangen_in(work_dir, meangen_input):
     axc = d['axial_chords']
     c0  = axc[0] if len(axc) > 0 else 0.040
     c1  = axc[1] if len(axc) > 1 else 0.040
+
+    # deviation and incidence: accept list [row1, row2] or fall back to scalar
+    dev = d.get('deviation', [5.0, 5.0])
+    inc = d.get('incidence', [0.0, 0.0])
+    dev1, dev2 = (dev[0], dev[1]) if isinstance(dev, (list, tuple)) else (dev, dev)
+    inc1, inc2 = (inc[0], inc[1]) if isinstance(inc, (list, tuple)) else (inc, inc)
 
     lines = []
     w = lines.append
@@ -154,18 +180,26 @@ def write_meangen_in(work_dir, meangen_input):
     w(f"   0.00000   0.02000     BLOCKAGE FACTORS, FBLOCK_LE,  FBLOCK_TE\n")
     # efficiency guess
     w(f"       {d['eta_guess']:.4f}             GUESS OF THE STAGE ISENTROPIC EFFICIENCY\n")
-    # deviation and incidence angles
-    w(f"   5.000   5.000         ESTIMATE OF THE FIRST AND SECOND ROW DEVIATION ANGLES\n")
-    w(f"   0.000   0.000         FIRST AND SECOND ROW INCIDENCE ANGLES\n")
-    # blade twist: 1.0 = full free-vortex
-    w(f"   {d['twist']:.4f}               BLADE TWIST OPTION, FRAC_TWIST (1 is free vortex, 0 is without twist)\n")
+    # deviation and incidence angles (empirical, per row)
+    w(f"   {dev1:.3f}   {dev2:.3f}         ESTIMATE OF THE FIRST AND SECOND ROW DEVIATION ANGLES\n")
+    w(f"   {inc1:.3f}   {inc2:.3f}         FIRST AND SECOND ROW INCIDENCE ANGLES\n")
+    # blade twist: 1.0 = full free-vortex, 0.0 = prismatic
+    frac_twist = d.get('frac_twist', 1.0)
+    w(f"   {frac_twist:.5f}               BLADE TWIST OPTION, FRAC_TWIST (1 is free vortex, 0 is without twist)\n")
     # blade rotation: N = no per-section rotation
     w(f"n                        BLADE ROTATION OPTION , Y or N\n")
     # QO angles: 90 = straight blade (no sweep/lean)
     w(f"  90.000  90.000         QO ANGLES AT LE  AND TE OF ROW 1\n")
     w(f"  90.000  90.000         QO ANGLES AT LE  AND TE OF ROW 2\n")
 
-    lines.extend(_generate_tail(n_stages=n, turbo_typ=d['turbo_typ']))
+    lines.extend(_generate_tail(
+        n_stages        = n,
+        turbo_typ       = d['turbo_typ'],
+        rotor_t_over_c  = d.get('rotor_t_over_c',  0.05),
+        rotor_x_tmax    = d.get('rotor_x_tmax',    0.40),
+        stator_t_over_c = d.get('stator_t_over_c', 0.05),
+        stator_x_tmax   = d.get('stator_x_tmax',   0.50),
+    ))
 
     out_path = os.path.join(work_dir, 'meangen.in')
     with open(out_path, 'w') as fh:
@@ -204,9 +238,33 @@ class MultallSolver(Base):
     # ------------------------------------------------------------------
 
     @Attribute
+    def run_dir(self):
+        """Per-run subdirectory: work_dir / <8-char hash of meangen_input>.
+
+        Embedding the hash in the path means ParaPy's attribute cache naturally
+        invalidates when any input parameter changes — no manual folder deletion
+        required. Each unique set of inputs gets its own folder; old folders are
+        kept on disk for inspection but are never reused incorrectly.
+        """
+        import hashlib, json
+        # Sort keys for deterministic serialisation; round floats to 6 sig-figs
+        # so tiny floating-point noise does not produce spurious cache misses.
+        def _normalise(v):
+            if isinstance(v, float):
+                return round(v, 6)
+            if isinstance(v, list):
+                return [_normalise(i) for i in v]
+            return v
+        normalised = {k: _normalise(v) for k, v in sorted(self.meangen_input.items())}
+        digest = hashlib.sha256(
+            json.dumps(normalised, sort_keys=True).encode()
+        ).hexdigest()[:8]
+        return os.path.join(self.work_dir, digest)
+
+    @Attribute
     def meangen_out_path(self):
         """Absolute path to meangen.out."""
-        return os.path.join(self.work_dir, 'meangen.out')
+        return os.path.join(self.run_dir, 'meangen.out')
 
     @Attribute
     def stagen_out_path(self):
@@ -216,42 +274,45 @@ class MultallSolver(Base):
     @Attribute
     def flow_out_path(self):
         """Absolute path to the Multall flow field output."""
-        return os.path.join(self.work_dir, 'flow_out')
+        return os.path.join(self.run_dir, 'flow_out')
 
     @Attribute
     def stagen_dat_path(self):
         """Absolute path to stagen.dat."""
-        return os.path.join(self.work_dir, 'stagen.dat')
+        return os.path.join(self.run_dir, 'stagen.dat')
 
     # ------------------------------------------------------------------
     # LOW fidelity
     # ------------------------------------------------------------------
 
     def _run_low_fidelity(self):
-        """Write meangen.in, run MEANGEN and STAGEN. Returns path to stagen.out."""
-        os.makedirs(self.work_dir, exist_ok=True)
+        """Write meangen.in, run MEANGEN and STAGEN. Returns path to stagen.out.
+
+        Uses run_dir (work_dir/<hash>) so each unique meangen_input gets its own
+        folder. ParaPy's cache of stagen_out_path is therefore always consistent
+        with the actual files on disk — no manual folder deletion needed.
+        """
+        run_dir = self.run_dir
+        os.makedirs(run_dir, exist_ok=True)
         # Resolve exe paths to absolute BEFORE changing cwd in subprocess.
-        # subprocess.run resolves relative paths from cwd, not from the
-        # original working directory of the Python process.
         meangen_abs = os.path.abspath(self.meangen_exe)
         stagen_abs  = os.path.abspath(self.stagen_exe)
-        print(f"[MultallSolver] writing meangen.in in {self.work_dir}")
-        write_meangen_in(self.work_dir, self.meangen_input)
+        print(f"[MultallSolver] run_dir = {run_dir}")
+        write_meangen_in(run_dir, self.meangen_input)
         print("[MultallSolver] running MEANGEN ...")
-        self._run_meangen(meangen_abs)
+        self._run_meangen(meangen_abs, cwd=run_dir)
         print("[MultallSolver] running STAGEN ...")
-        self._run_stagen(stagen_abs)
-        path = os.path.join(self.work_dir, 'stagen.out')
+        self._run_stagen(stagen_abs, cwd=run_dir)
+        path = os.path.join(run_dir, 'stagen.out')
         print(f"[MultallSolver] low-fidelity run complete -> {path}")
-        # Return path directly. Do NOT use `return self.stagen_out_path` here:
-        # that @Attribute called this method and re-accessing it deadlocks ParaPy.
         return path
 
-    def _run_meangen(self, exe_path=None):
+    def _run_meangen(self, exe_path=None, cwd=None):
         """Launch MEANGEN. Feeds 'F' on stdin to select file input (meangen.in)."""
+        cwd = cwd or self.work_dir
         result = subprocess.run(
             [exe_path or self.meangen_exe],
-            cwd=self.work_dir,
+            cwd=cwd,
             input=b'F\n',
             capture_output=False,   # stream output to console for diagnostics
             check=False,
@@ -260,17 +321,18 @@ class MultallSolver(Base):
             raise RuntimeError(
                 f"MEANGEN failed with exit code {result.returncode}.\n"
                 f"  exe: {exe_path or self.meangen_exe}\n"
-                f"  cwd: {self.work_dir}\n"
+                f"  cwd: {cwd}\n"
                 f"  Check the console output above for MEANGEN's error message.\n"
-                f"  meangen.in is at: {os.path.join(self.work_dir, 'meangen.in')}"
+                f"  meangen.in is at: {os.path.join(cwd, 'meangen.in')}"
             )
 
-    def _run_stagen(self, exe_path=None):
+    def _run_stagen(self, exe_path=None, cwd=None):
         """Launch STAGEN. Feeds 'Y' to accept stagen.dat; extra '0.1' lines
         cover the factk fallback for very thick blades (unread lines ignored)."""
+        cwd = cwd or self.work_dir
         result = subprocess.run(
             [exe_path or self.stagen_exe],
-            cwd=self.work_dir,
+            cwd=cwd,
             input=b'Y\n' + b'0.1\n' * 32,
             capture_output=False,
             check=False,
@@ -279,7 +341,7 @@ class MultallSolver(Base):
             raise RuntimeError(
                 f"STAGEN failed with exit code {result.returncode}.\n"
                 f"  exe: {exe_path or self.stagen_exe}\n"
-                f"  cwd: {self.work_dir}"
+                f"  cwd: {cwd}"
             )
 
     # ------------------------------------------------------------------
@@ -333,6 +395,11 @@ if __name__ == '__main__':
         reaction=0.5, flow_coeff=0.6, loading_coeff=0.4,
         design_radius=0.35, axial_chords=[0.035, 0.045],
         row_gap=0.25, stage_gap=0.5, eta_guess=0.9,
+        frac_twist=1.0,
+        deviation=[1.2, 1.2],
+        incidence=[-1.0, -1.0],
+        rotor_t_over_c=0.05,  rotor_x_tmax=0.40,
+        stator_t_over_c=0.05, stator_x_tmax=0.50,
     )
 
     out = write_meangen_in(str(work_dir_path), meangen_input_test)
