@@ -167,12 +167,17 @@ class Blade(GeomBase):
         pitch = math.radians(self.pitch_angles[i])
         r = self.r_hub + self.span_fractions[i] * self.total_span
 
-        # 2-D pipeline: normalise → resample → align TE → enforce CCW
-        pts2d = self._enforce_ccw(
-            self._align_te(
-                self._resample(
-                    self._normalise(raw),
-                    self.n_pts)))
+        # 2-D pipeline: normalise -> resample -> align TE -> enforce CCW -> re-align TE.
+        # _enforce_ccw may reverse the loop, displacing the TE from index 0.
+        # A second _align_te call restores index-0 = TE so that all stations
+        # start at the same feature point, which is required for LoftedSolid
+        # to produce a geometrically consistent loft across hub/mid/tip.
+        pts2d = self._align_te(
+            self._enforce_ccw(
+                self._align_te(
+                    self._resample(
+                        self._normalise(raw),
+                        self.n_pts))))
 
         # Close the loop (FittedCurve needs first == last for a closed wire)
         pts2d_closed = pts2d + [pts2d[0]]

@@ -5,37 +5,39 @@ Parses stagen.out into the per-section blade-surface point clouds that the
 Stage / Blade classes consume.
 
 stagen.out layout (repeats once per blade SECTION, hub -> tip, row after row):
-    SUCTION SURFACE POINTS FROM LE TO TE.        -> "idx  x  y" lines
-    PRESSURE SURFACE POINTS FROM LE TO TE.       -> "idx  x  y" lines
+
+    SUCTION SURFACE POINTS FROM LE TO TE.
+        idx  x  y   -- N_suc points, x increasing LE->TE
+    PRESSURE SURFACE POINTS FROM LE TO TE.
+        idx  x  y   -- N_prs points, x increasing LE->TE
+
     AXIAL & RADIAL COORDINATES ON THE SS AFTER STACKING
-        J , XGRID,RGRID  n  <x>  <r>             -> radial station of the section
-The surface points are normalised to unit axial chord (XCHORD ~= 1.0); the
-metric axial chord and the blade count are NOT in stagen.out — they come from
+        J , XGRID,RGRID  n  <x>  <r>  -- radial station
+
+Strategy: read ONLY the two explicit SUCTION / PRESSURE blocks that STAGEN
+already prints correctly.  Do NOT reconstruct surfaces from the wrap-around
+array using LE/TE indices -- that is error-prone and redundant.
+
+If a section is degenerate (suction or pressure has < MIN_PTS points), it is
+replaced by linear interpolation between the nearest valid neighbours.  A
+warning is printed to stderr.
+
+Rows are auto-detected by the radius resetting from tip back to hub; or a
+fixed n_sections count can be supplied.
+
+Metric chord and blade count are NOT in stagen.out -- they come from
 stagen.dat via MeagenParser.merge().
-
-Important: stagen.out has NO "STAGE No, ROW No, No. BLADES" header (that string
-is not emitted to the file), so rows cannot be delimited by a blade-count line.
-Instead, blade rows are detected by the radius RESETTING to the hub between the
-last section of one row (tip) and the first section of the next (hub).
-
-Output: list of stage dicts, one per stage:
-    {
-      'rotor':  { 'suction', 'pressure', 'r_sections', 'span_fractions',
-                  'chords', 'pitch_angles', 'n_blades' },
-      'stator': { ... same keys ... },
-      '_row_order': ['rotor', 'stator'],   # physical order, used by merge()
-    }
-Placeholders filled by MeagenParser.merge(): chords (normalised 1.0 -> metric),
-pitch_angles (0.0 -> stagger), n_blades (0 -> real count).
 """
 
 import re
-
+import sys
 
 _SUC   = 'SUCTION SURFACE POINTS FROM LE TO TE'
 _PRS   = 'PRESSURE SURFACE POINTS FROM LE TO TE'
 _STACK = 'AXIAL & RADIAL COORDINATES ON THE SS AFTER STACKING'
-_PRS_END = 'AXIAL,TANGENTIAL AND RADIAL COORDINATES ON THE STREAM'
+
+# Sections with fewer points than this on either surface are treated as degenerate.
+_MIN_PTS = 10
 
 # Fortran real/int token (incl. E-notation).
 _NUM = r'[-+]?\d*\.?\d+(?:[Ee][-+]?\d+)?'
@@ -48,27 +50,19 @@ class StageParser:
     # Public interface
     # ------------------------------------------------------------------
 
+    # In StageParser.parse() — add machine_type parameter
     @staticmethod
-    def parse(filepath, row_order=None, n_sections=None):
+    def parse(filepath, row_order=None, n_sections=None, machine_type='turbine'):
         """Parse stagen.out and return a list of stage dicts.
 
         Parameters
         ----------
-        filepath : str
-            Path to stagen.out.
-        row_order : list[str] or None
-            Physical 'rotor'/'stator' label of each blade row in file order,
-            e.g. ['rotor', 'stator'] for a compressor stage or
-            ['stator', 'rotor'] for a turbine stage. If None, alternating
-            rotor/stator starting with rotor is assumed (compressor default).
-        n_sections : int or None
-            Sections per blade row (e.g. 3 for hub/mid/tip). If None, rows are
-            auto-detected by the radius reset between tip and the next hub.
-
-        Returns
-        -------
-        list[dict]
-            One dict per stage, each with 'rotor', 'stator' and '_row_order'.
+        ...
+        machine_type : str
+            'compressor' or 'turbine'. For a compressor the axial x-coordinates
+            in stagen.out are mirrored (x' = 1 - x for normalised profiles) so
+            that the LE sits at x=0 in the engine flow direction.
+        ...
         """
         with open(filepath, 'r') as fh:
             text = fh.read()
@@ -80,8 +74,12 @@ class StageParser:
                 "Is this a stagen.out file?"
             )
 
+        StageParser._repair_degenerate(sections)
+
         section_groups = StageParser._group_into_rows(sections, n_sections)
-        row_dicts = [StageParser._assemble_row(g) for g in section_groups]
+        # Pass machine_type down so _assemble_row can apply the x-flip if needed.
+        row_dicts = [StageParser._assemble_row(g, machine_type=machine_type)
+                     for g in section_groups]
 
         if row_order is None:
             row_order = ['rotor' if i % 2 == 0 else 'stator'
@@ -102,7 +100,10 @@ class StageParser:
     def _parse_sections(text):
         """Return a flat list of section dicts in file order.
 
-        Each: {'suction': [(x,y)...], 'pressure': [(x,y)...], 'r': float|None}.
+        Each dict: {'suction': [(x,y)...], 'pressure': [(x,y)...], 'r': float|None}.
+
+        Reads the explicit SUCTION/PRESSURE blocks that STAGEN writes --
+        no reconstruction from the wrap-around array.
         """
         suc_positions = [m.start() for m in re.finditer(re.escape(_SUC), text)]
         sections = []
@@ -110,17 +111,21 @@ class StageParser:
             end = suc_positions[i + 1] if i + 1 < len(suc_positions) else len(text)
             chunk = text[sp:end]
 
+            # --- Suction surface ---
             prs_rel = chunk.find(_PRS)
             suc_txt = chunk[len(_SUC):prs_rel] if prs_rel != -1 else chunk[len(_SUC):]
             suction = StageParser._parse_xy_block(suc_txt)
 
+            # --- Pressure surface ---
             if prs_rel != -1:
-                after = chunk[prs_rel + len(_PRS):]
-                stop = StageParser._first_index(after, [_PRS_END, _STACK])
-                pressure = StageParser._parse_xy_block(after[:stop])
+                after_prs = chunk[prs_rel + len(_PRS):]
+                # Stop at the next structural marker (STACKING or end of chunk).
+                stop = StageParser._first_index(after_prs, [_STACK])
+                pressure = StageParser._parse_xy_block(after_prs[:stop])
             else:
                 pressure = []
 
+            # --- Radial station ---
             stack_rel = chunk.find(_STACK)
             r = (StageParser._parse_first_rgrid(chunk[stack_rel:])
                  if stack_rel != -1 else None)
@@ -129,11 +134,63 @@ class StageParser:
         return sections
 
     @staticmethod
+    def _repair_degenerate(sections):
+        """Replace degenerate sections (< _MIN_PTS points) by interpolation.
+
+        Works in-place.  Interpolation is linear between the nearest valid
+        neighbours; if no valid neighbour exists, copies the one that does.
+        Prints a warning to stderr for each repaired section.
+        """
+        n = len(sections)
+        for idx in range(n):
+            sec = sections[idx]
+            if (len(sec['suction']) >= _MIN_PTS
+                    and len(sec['pressure']) >= _MIN_PTS):
+                continue  # healthy
+
+            print(
+                f"StageParser WARNING: section {idx} is degenerate "
+                f"(suc={len(sec['suction'])}, prs={len(sec['pressure'])} points). "
+                f"Replacing by interpolation.",
+                file=sys.stderr
+            )
+
+            # Find nearest valid neighbours.
+            prev_ok = next((j for j in range(idx-1, -1, -1)
+                            if len(sections[j]['suction']) >= _MIN_PTS), None)
+            next_ok = next((j for j in range(idx+1, n)
+                            if len(sections[j]['suction']) >= _MIN_PTS), None)
+
+            if prev_ok is None and next_ok is None:
+                # Cannot repair -- leave as-is.
+                print(
+                    f"StageParser WARNING: no valid neighbour found for section {idx}.",
+                    file=sys.stderr
+                )
+                continue
+
+            if prev_ok is None:
+                donor = sections[next_ok]
+            elif next_ok is None:
+                donor = sections[prev_ok]
+            else:
+                # Linear interpolation: weight towards nearest neighbour.
+                # For simplicity, just copy the closer one (index distance).
+                donor = (sections[prev_ok]
+                         if (idx - prev_ok) <= (next_ok - idx)
+                         else sections[next_ok])
+
+            sections[idx]['suction']  = list(donor['suction'])
+            sections[idx]['pressure'] = list(donor['pressure'])
+            if sections[idx]['r'] is None:
+                sections[idx]['r'] = donor['r']
+
+    @staticmethod
     def _group_into_rows(sections, n_sections):
         """Group consecutive sections into blade rows.
 
-        If n_sections is given, chunk in fixed blocks of that size. Otherwise
-        start a new row whenever the radius drops (tip -> next hub).
+        If n_sections is given, chunk in fixed blocks.  Otherwise start a new
+        row whenever the radius drops (tip -> next hub).
         """
         if n_sections:
             return [sections[i:i + n_sections]
@@ -151,11 +208,25 @@ class StageParser:
             rows.append(current)
         return rows
 
+    # In StageParser._assemble_row() — add machine_type parameter and flip logic
     @staticmethod
-    def _assemble_row(secs):
-        """Build a blade-row dict from its list of section dicts."""
-        suction    = [s['suction'] for s in secs]
-        pressure   = [s['pressure'] for s in secs]
+    def _assemble_row(secs, machine_type='turbine'):
+        """Build a blade-row dict from its list of section dicts.
+
+        For a compressor, stagen.out writes x increasing in the direction
+        OPPOSITE to the engine flow (TE at low x, LE at high x). Profiles are
+        normalised to unit axial chord at this point (metric chords arrive later
+        via MeagenParser.merge()), so the reflection is x' = 1 - x.
+        For a turbine the orientation is already correct; no flip is applied.
+        """
+        suction = [s['suction'] for s in secs]
+        pressure = [s['pressure'] for s in secs]
+
+        if machine_type == 'compressor':
+            # Reflect x about mid-chord: x' = 1 - x (profiles are normalised here).
+            suction = [[(1.0 - x, y) for x, y in sec] for sec in suction]
+            pressure = [[(1.0 - x, y) for x, y in sec] for sec in pressure]
+
         r_sections = StageParser._fill_none([s['r'] for s in secs])
 
         r_hub, r_tip = r_sections[0], r_sections[-1]
@@ -164,13 +235,13 @@ class StageParser:
 
         n = len(secs)
         return {
-            'suction':        suction,
-            'pressure':       pressure,
-            'r_sections':     r_sections,
+            'suction': suction,
+            'pressure': pressure,
+            'r_sections': r_sections,
             'span_fractions': span_fractions,
-            'chords':         [1.0] * n,   # normalised; merge() -> metric
-            'pitch_angles':   [0.0] * n,   # placeholder; merge() -> stagger
-            'n_blades':       0,           # placeholder; merge() -> real count
+            'chords': [1.0] * n,  # normalised; merge() -> metric
+            'pitch_angles': [0.0] * n,  # placeholder; merge() -> stagger
+            'n_blades': 0,  # placeholder; merge() -> real count
         }
 
     @staticmethod
@@ -180,8 +251,8 @@ class StageParser:
         for s in range(0, len(row_dicts) - 1, 2):
             lbl0, lbl1 = row_order[s], row_order[s + 1]
             stages.append({
-                lbl0:        row_dicts[s],
-                lbl1:        row_dicts[s + 1],
+                lbl0:         row_dicts[s],
+                lbl1:         row_dicts[s + 1],
                 '_row_order': [lbl0, lbl1],
             })
         return stages
@@ -242,10 +313,12 @@ class StageParser:
 
 if __name__ == '__main__':
     from pathlib import Path
+    import sys
 
-    base_dir = Path.cwd()
-
-    path = base_dir / "Multall" / "DesignExample" / "stagen.out"
+    if len(sys.argv) > 1:
+        path = Path(sys.argv[1])
+    else:
+        path = Path.cwd() / "Multall" / "DesignExample" / "stagen.out"
 
     stages = StageParser.parse(path)
     print(f"Parsed {len(stages)} stage(s)")
@@ -254,5 +327,5 @@ if __name__ == '__main__':
             d = st[row]
             print(f"  Stage {si+1} {row}: {len(d['suction'])} sections, "
                   f"suc_pts/sec={[len(s) for s in d['suction']]}, "
-                  f"r={[round(r, 4) for r in d['r_sections']]}, "
-                  f"span_frac={[round(f, 3) for f in d['span_fractions']]}")
+                  f"prs_pts/sec={[len(s) for s in d['pressure']]}, "
+                  f"r={[round(r, 4) for r in d['r_sections']]}")

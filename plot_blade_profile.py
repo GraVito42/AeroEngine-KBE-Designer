@@ -140,11 +140,17 @@ def plot_blade_profiles(stage_data, machine_type='compressor', save_dir=None):
         gap_x  = r_te_x + 0.15
         s_le_y = s_suc_m[0][1]    # stator LE y before shift
         dy     = r_te_y - s_le_y  # shift so stator LE matches rotor TE y
-
-        _plot_row_profile(ax_b, r_suc_m, r_prs_m, 'steelblue', 'Rotor',
-                          x_offset=0.0, y_offset=0.0)
-        _plot_row_profile(ax_b, s_suc_m, s_prs_m, 'firebrick', 'Stator',
-                          x_offset=gap_x, y_offset=dy)
+        
+        if machine_type == 'compressor':
+            _plot_row_profile(ax_b, r_suc_m, r_prs_m, 'steelblue', 'Rotor',
+                            x_offset=0.0, y_offset=0.0)
+            _plot_row_profile(ax_b, s_suc_m, s_prs_m, 'firebrick', 'Stator',
+                            x_offset=gap_x, y_offset=dy)
+        else:
+            _plot_row_profile(ax_b, s_suc_m, s_prs_m, 'firebrick', 'Stator',
+                            x_offset=0.0, y_offset=0.0)
+            _plot_row_profile(ax_b, r_suc_m, r_prs_m, 'steelblue', 'Rotor',
+                            x_offset=gap_x, y_offset=-dy)
 
         # Mark the TE/LE junction
         ax_b.plot(r_te_x, r_te_y, 'k^', ms=6, zorder=5,

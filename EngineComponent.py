@@ -144,13 +144,13 @@ class EngineComponent(GeomBase):
     # Attributes (shortcuts into the two stations)
     # ------------------------------------------------------------------
 
-    @Attribute
-    def station_summary(self):
-        """Inlet + outlet summary dict — fed to ReportWriter."""
-        return {
-            f"station_{self.station_in.station_number}":  self.station_in.summary,
-            f"station_{self.station_out}":                self.station_out_part.summary,
-        }
+    # @Attribute
+    # def station_summary(self):
+    #     """Inlet + outlet summary dict — fed to ReportWriter."""
+    #     return {
+    #         f"station_{self.station_in.station_number}":  self.station_in.summary,
+    #         f"station_{self.station_out}":                self.station_out_part.summary,
+    #     }
 
     # ------------------------------------------------------------------
     # Validation

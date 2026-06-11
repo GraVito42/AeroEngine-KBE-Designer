@@ -158,7 +158,7 @@ def write_meangen_in(work_dir, meangen_input):
     w(f"   5.000   5.000         ESTIMATE OF THE FIRST AND SECOND ROW DEVIATION ANGLES\n")
     w(f"   0.000   0.000         FIRST AND SECOND ROW INCIDENCE ANGLES\n")
     # blade twist: 1.0 = full free-vortex
-    w(f"   1.00000               BLADE TWIST OPTION, FRAC_TWIST (1 is free vortex, 0 is without twist)\n")
+    w(f"   {d['twist']:.4f}               BLADE TWIST OPTION, FRAC_TWIST (1 is free vortex, 0 is without twist)\n")
     # blade rotation: N = no per-section rotation
     w(f"n                        BLADE ROTATION OPTION , Y or N\n")
     # QO angles: 90 = straight blade (no sweep/lean)

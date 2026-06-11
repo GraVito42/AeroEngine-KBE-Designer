@@ -73,6 +73,7 @@ class Turbomachine(EngineComponent, GeomBase):
 
     row_gap   = Input(0.25)   # blade-row gap as fraction of axial chord
     stage_gap = Input(0.50)   # inter-stage gap as fraction of axial chord
+    twist     = Input(0)
 
     gas_constant = Input(287.15)
     """Specific gas constant R [J/(kg.K)].
@@ -83,7 +84,6 @@ class Turbomachine(EngineComponent, GeomBase):
     # ------------------------------------------------------------------
 
     n_pts     = Input(60)      # blade profile resampling resolution
-    density   = Input(8190.0)  # material density for weight estimate [kg/m^3]
 
     # ------------------------------------------------------------------
     # Inputs — solver configuration (forwarded to MultallSolver)
@@ -151,6 +151,7 @@ class Turbomachine(EngineComponent, GeomBase):
             row_gap       = self.row_gap,
             stage_gap     = self.stage_gap,
             eta_guess     = self.isos_efficiency,
+            twist         = self.twist,
         )
 
     # ------------------------------------------------------------------
@@ -193,7 +194,7 @@ class Turbomachine(EngineComponent, GeomBase):
         dat_path = self.solver.stagen_dat_path
         meagen_rows = MeagenParser.parse(dat_path)
         row_order = [r['row_type'] for r in meagen_rows]
-        stages = StageParser.parse(out_path, row_order=row_order)
+        stages = StageParser.parse(out_path, row_order=row_order, machine_type=self.machine_type)
         merged = MeagenParser.merge(stages, meagen_rows)
         for i, st in enumerate(merged):
             rc = sum(st['rotor']['chords'])  / len(st['rotor']['chords'])
@@ -350,14 +351,14 @@ if __name__ == '__main__':
     work = Path(__file__).resolve().parent / 'Multall' / 'DesignExample' / 'test_run_c'
 
     compressor = Turbomachine(
-        machine_type='compressor',
+        machine_type='turbine',
         inflow_conditions=inlet,
         pressure_ratio=4.0,
         isos_efficiency=0.90,
-        n_stages=3,
+        n_stages=1,
         stage_gap = 1,
         row_gap = 0.5,
-        rpm=3600.0,
+        rpm=1200.0,
         design_radius=0.35,
         work_dir=str(work),
         label='HPC',

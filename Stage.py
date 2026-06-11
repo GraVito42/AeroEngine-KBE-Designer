@@ -91,12 +91,21 @@ class Stage(GeomBase):
     def _closed_profiles(self, suc_list, prs_list):
         """Merge suction+pressure lists into closed profile loops.
 
-        stagen.out: both surfaces run LE→TE.
-        Closed loop: suction LE→TE + pressure reversed (TE→LE),
-        shared LE/TE endpoints deduplicated.
+        STAGEN writes both surfaces 'FROM LE TO TE', meaning x increases
+        from LE (x≈0) to TE (x≈1) in both blocks.  The closed loop is:
+            suction  LE->TE  +  pressure reversed (TE->LE)
+        with the shared LE and TE endpoints deduplicated.
+
+        Guard: reverse both surfaces if the first point has higher x than
+        the last (shouldn't happen with current STAGEN output, but keeps
+        the code robust against format variations).
         """
         result = []
         for suc, prs in zip(suc_list, prs_list):
+            # Reverse if written TE->LE (first x > last x in flow direction).
+            if suc and suc[0][0] > suc[-1][0]:
+                suc = list(reversed(suc))
+                prs = list(reversed(prs))
             prs_rev = list(reversed(prs))
             result.append(list(suc) + prs_rev[1:-1])
         return result
@@ -219,7 +228,7 @@ class Stage(GeomBase):
             profiles             = self.rotor_profiles_closed,
             span_fractions       = self.rotor_span_fractions,
             chords               = self.rotor_chords,
-            pitch_angles         = self.rotor_pitch_angles,
+            pitch_angles         = [0.0] * len(self.rotor_profiles_suc),
             total_span           = self.rotor_span,
             r_hub                = self.rotor_r_hub,
             n_pts                = self.n_pts,
@@ -240,7 +249,7 @@ class Stage(GeomBase):
             profiles             = self.stator_profiles_closed,
             span_fractions       = self.stator_span_fractions,
             chords               = self.stator_chords,
-            pitch_angles         = self.stator_pitch_angles,
+            pitch_angles         = [0.0] * len(self.stator_profiles_suc),
             total_span           = self.stator_span,
             r_hub                = self.stator_r_hub,
             n_pts                = self.n_pts,
