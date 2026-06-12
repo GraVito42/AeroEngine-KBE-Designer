@@ -23,6 +23,7 @@ with '_'.
 """
 
 import os
+import re
 import subprocess
 
 from parapy.core import Base, Input, Attribute, action
@@ -207,6 +208,32 @@ def write_meangen_in(work_dir, meangen_input):
     print(f"[MultallSolver] meangen.in written to {out_path} ({len(lines)} lines)")
     return out_path
 
+def _repair_stagen_dat(path):
+    """Re-insert spaces between fused numbers on MEANGEN's
+    'RPM, STATIC PRESSURES THROUGH ROW' lines.
+
+    That line uses an F10.2 field. A 7-integer-digit value (e.g. 1346066.62,
+    from high-pressure turbine stages) fills the field exactly, leaving no
+    separating space, so adjacent values fuse into one token with two decimal
+    points that STAGEN's list-directed read rejects ('Bad real number in item
+    1'). Every value on the line has 2 decimals, so a fused boundary is always
+    '.dd' followed immediately by a digit or '-' -> inserting a space is safe.
+    Only this line type is touched (other lines use wider, un-fused formats).
+    """
+    marker = 'RPM, STATIC PRESSURES THROUGH ROW'
+    with open(path, 'r') as fh:
+        lines = fh.readlines()
+    changed = False
+    for i, line in enumerate(lines):
+        if marker in line:
+            fixed = re.sub(r'(\.\d\d)(?=[\d-])', r'\1 ', line)
+            if fixed != line:
+                lines[i], changed = fixed, True
+    if changed:
+        with open(path, 'w') as fh:
+            fh.writelines(lines)
+        print(f"[MultallSolver] repaired fused numeric fields in {path}")
+
 
 # ---------------------------------------------------------------------------
 # ParaPy class
@@ -301,6 +328,7 @@ class MultallSolver(Base):
         write_meangen_in(run_dir, self.meangen_input)
         print("[MultallSolver] running MEANGEN ...")
         self._run_meangen(meangen_abs, cwd=run_dir)
+        _repair_stagen_dat(os.path.join(run_dir, 'stagen.dat'))  # <-- add
         print("[MultallSolver] running STAGEN ...")
         self._run_stagen(stagen_abs, cwd=run_dir)
         path = os.path.join(run_dir, 'stagen.out')

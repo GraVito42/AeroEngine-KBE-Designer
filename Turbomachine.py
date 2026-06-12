@@ -26,6 +26,7 @@ Coordinate system (engine frame): X axial, Y radial, Z tangential.
 """
 
 from pathlib import Path
+import math
 import os
 
 from parapy.core import Input, Attribute, Part, child, action
@@ -60,13 +61,94 @@ class Turbomachine(EngineComponent, GeomBase):
     design_radius = Input()
     """Meanline design-point radius [m] (the mean blade radius)."""
 
+
     # ------------------------------------------------------------------
-    # Inputs — meanline design knobs (Compressor/Turbine override via presets)
+    # Inputs — PHYSICAL REQUIREMENTS of the machine (primary design knobs)
+    # The meanline coefficients below are DERIVED from these. Each has an
+    # adaptive default (rule-of-thumb), so the class runs standalone, but
+    # they are meant to be pinned from the cycle analysis / Spool.
     # ------------------------------------------------------------------
 
-    reaction      = Input(0.5)
-    flow_coeff    = Input(0.5)
-    loading_coeff = Input(1.0)
+    @Input
+    def U(self):
+        """Blade speed at the design (mean) radius [m/s].
+        Default: U = omega * r_mean = (rpm * pi/30) * design_radius."""
+        return self.rpm * math.pi / 30.0 * self.design_radius
+
+    @Input
+    def V_ax(self):
+        """Axial (meridional) flow velocity [m/s].
+        Default: the inlet absolute velocity, assuming axial inflow (no swirl).
+        # TODO: if the stage carries inlet swirl, pass V_ax explicitly."""
+        return self.inflow_conditions.v
+
+    @Input
+    def delta_H(self):
+        """Total specific enthalpy change across the WHOLE machine [J/kg].
+        Default (magnitude): cp * |T0_out - T0_in|, driven by pressure_ratio
+        and isos_efficiency through EngineComponent.outlet_flow."""
+        return self.station_in.cp * abs(
+            self.station_out_part.T_total - self.station_in.T_total)
+
+    @Input
+    def delta_H_stage(self):
+        """Total specific enthalpy change PER STAGE [J/kg].
+        Default: even split, delta_H / n_stages. Override for biased loading."""
+        return self.delta_H / self.n_stages
+
+    #: [-] Degree of reaction. INDEPENDENT design parameter — it is NOT derivable
+    #  from (U, V_ax, delta_H, delta_H_stage) alone; it sets the rotor/stator
+    #  enthalpy split and needs a velocity-triangle angle to be computed.
+    #  See reaction_from_inlet_swirl() if you have the inlet swirl angle.
+    reaction = Input(0.5)
+
+    # ------------------------------------------------------------------
+    # DERIVED meanline coefficients (consumed by meangen_input unchanged)
+    # Kept as @Input-with-default so they remain individually overridable.
+    # ------------------------------------------------------------------
+
+    @Input
+    def flow_coeff(self):
+        """Flow coefficient  phi = V_ax / U  [-]."""
+        return self.V_ax / self.U
+
+    @Input
+    def loading_coeff(self):
+        """Stage loading coefficient  psi = |delta_H_stage| / U^2  [-]."""
+        return abs(self.delta_H_stage) / self.U ** 2
+
+    @Attribute
+    def delta_Vtheta(self):
+        """Euler tangential-velocity change per stage  dCtheta = delta_H_stage / U  [m/s]."""
+        return self.delta_H_stage / self.U
+
+    @Attribute
+    def stages_required(self):
+        """Minimum stage count implied by the two enthalpy requirements [-].
+        Diagnostic only — n_stages stays the primary input (set by Spool)."""
+        return math.ceil(abs(self.delta_H) / abs(self.delta_H_stage))
+
+    @Attribute
+    def coefficients(self):
+        """The three meanline coefficients in one dict (for ReportWriter)."""
+        return {"flow_coeff": self.flow_coeff,
+                "loading_coeff": self.loading_coeff,
+                "reaction": self.reaction}
+
+    def reaction_from_inlet_swirl(self, alpha1_deg):
+        """Compute degree of reaction from the inlet absolute swirl angle.
+
+        Axial NORMAL-stage relation (constant V_ax, mean radius):
+            Lambda = 1 - psi/2 - phi * tan(alpha1)
+        Use this only when alpha1 is known; otherwise `reaction` is a free input.
+
+        # TODO: this is the COMPRESSOR-convention form. Confirm the turbine
+        #       sign/station convention with the Architect before relying on it
+        #       (Turbine numbers stations stator-LE -> rotor-TE, so alpha1 is the
+        #       stator-exit angle and the sign of the psi term may flip).
+        """
+        return 1.0 - self.loading_coeff / 2.0 \
+            - self.flow_coeff * math.tan(math.radians(alpha1_deg))
 
     blade_axial_chords = Input(None)
     """Axial chords [m] per blade row [rotor, stator].
@@ -76,6 +158,15 @@ class Turbomachine(EngineComponent, GeomBase):
     blade_AR = Input(3.0)
     """Blade aspect ratio (span / chord). Used when blade_axial_chords is None
     to estimate axial chords from design_radius. Typical: 2-4 compressor, 2-3 turbine."""
+
+    inlet_rotor_max_AR = Input(3.5)
+    """Max span/chord aspect ratio for the FIRST-stage rotor's CAD blade.
+    The inlet rotor sits in the widest annulus, so it is the tallest and most
+    slender blade in the machine; its LoftedSolid degenerates at the tip when
+    the metric chord from stagen.dat leaves it too thin. If its parsed AR
+    exceeds this cap, its per-section chords are scaled up so the loft is
+    robust. Geometry only — the CFD already ran on the real chord. Set very
+    high (e.g. 1e9) to disable."""
 
     mid_chord_fraction = Input(0.40)
     """Ratio of axial chord to true chord (cos of stagger angle approximation).
@@ -90,10 +181,10 @@ class Turbomachine(EngineComponent, GeomBase):
     0.0 = prismatic blade (manufacturing-friendly, no twist).
     Values between 0 and 1 give a controlled-vortex design."""
 
-    rotor_t_over_c  = Input(0.05)
+    rotor_t_over_c  = Input(0.1)
     """Rotor max thickness-to-chord ratio t/c. Typical: 0.04-0.08."""
 
-    stator_t_over_c = Input(0.05)
+    stator_t_over_c = Input(0.1)
     """Stator max thickness-to-chord ratio t/c. Typical: 0.04-0.08."""
 
     rotor_x_tmax  = Input(0.40)
@@ -292,6 +383,7 @@ class Turbomachine(EngineComponent, GeomBase):
         row_order = [r['row_type'] for r in meagen_rows]
         stages = StageParser.parse(out_path, row_order=row_order, machine_type=self.machine_type)
         merged = MeagenParser.merge(stages, meagen_rows)
+        self._cap_inlet_rotor_aspect_ratio(merged)  # <-- add
         for i, st in enumerate(merged):
             rc = sum(st['rotor']['chords'])  / len(st['rotor']['chords'])
             sc = sum(st['stator']['chords']) / len(st['stator']['chords'])
@@ -299,6 +391,33 @@ class Turbomachine(EngineComponent, GeomBase):
                   f"stator chord={sc:.4f}m, "
                   f"stator_LE_offset={rc + self.axial_gap:.4f}m")
         return merged
+
+    def _cap_inlet_rotor_aspect_ratio(self, merged):
+        """Thicken the first-stage rotor if it is too slender to loft.
+
+        The inlet rotor is the tallest blade (widest annulus), so its
+        LoftedSolid degenerates at the tip when span/chord is large. Scale its
+        per-section chords up so span/chord <= inlet_rotor_max_AR. This widens
+        the displayed CAD blade only; the CFD already ran on the real chord,
+        and because stage_data is mutated here the axial stacking sees the same
+        chord, so downstream rows stay correctly spaced.
+        """
+        if not merged:
+            return
+        rotor = merged[0]['rotor']  # stage 0 rotor == inlet rotor (compressor)
+        r = rotor['r_sections']
+        span = r[-1] - r[0]
+        mean_chord = sum(rotor['chords']) / len(rotor['chords'])
+        if span <= 0.0 or mean_chord <= 0.0:
+            return
+        ar = span / mean_chord
+        if ar <= self.inlet_rotor_max_AR:
+            return
+        factor = ar / self.inlet_rotor_max_AR
+        rotor['chords'] = [c * factor for c in rotor['chords']]
+        print(f"[stage_data] inlet rotor AR={ar:.2f} > {self.inlet_rotor_max_AR} "
+              f"-> chords x{factor:.2f} (mean {mean_chord:.4f} -> "
+              f"{mean_chord * factor:.4f} m, CAD only)")
 
     # ------------------------------------------------------------------
     # Axial stacking of the stages
@@ -425,6 +544,19 @@ class Turbomachine(EngineComponent, GeomBase):
         """Container for high-fidelity results (filled by multall_analysis).
         Matches the UML 'detailed_features: dict[str, float]'."""
         return {}
+
+    def validate(self):
+        warnings = super().validate()
+        if self.U <= 0.0:
+            warnings.append(f"{self.label}: blade speed U={self.U:.2f} must be > 0.")
+        if not (0.0 <= self.reaction <= 1.0):
+            warnings.append(
+                f"{self.label}: reaction={self.reaction:.3f} outside [0, 1].")
+        if self.stages_required != self.n_stages:
+            warnings.append(
+                f"{self.label}: n_stages={self.n_stages} but delta_H/delta_H_stage "
+                f"implies {self.stages_required} stage(s) — check the work split.")
+        return warnings
 
 
 # ---------------------------------------------------------------------------

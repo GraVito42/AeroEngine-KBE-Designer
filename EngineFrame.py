@@ -13,7 +13,7 @@ Inherits from Duct:
   - weight and volume from EngineComponent
   - pressure_ratio = 1.0  (frame is structural, no aero pressure loss)
   - Mach_out = nozzle exit Mach (default, overridable by AeroEngine)
-  - length = inlet_length + length_casing + nozzle_length
+  - length = inlet_length + casing_length + nozzle_length
   - x_offset = 0.0  (frame always starts at global origin)
 
 Unified wall_profile (single FittedCurve):
@@ -66,9 +66,6 @@ class EngineFrame(Duct):
     # Structural / containment inputs
     # ------------------------------------------------------------------
 
-    #: [m]   Sheet-metal wall thickness
-    sheet_thickness: float = Input(0.003)
-
     #: [-]   Blade-off safety factor (CS-E §25.903(d) minimum = 1.5)
     safety_factor: float = Input(1.5)
 
@@ -79,17 +76,12 @@ class EngineFrame(Duct):
     # Blade-off kinetic inputs
     # ------------------------------------------------------------------
 
-    #: [kg]      Mass of one released blade
-    blade_mass: float = Input(1.5)
-
-    #: [m]       Blade tip radius (worst case = casing inner radius)
-    blade_tip_radius: float = Input(0.28)
-
-    #: [rad/s]   Rotor angular velocity at blade-off event
-    omega: float = Input(1200.0)
-
-    #: [kg·m²]  Blade moment of inertia about rotor axis
-    blade_inertia: float = Input(0.02)
+    blade_properties: dict = Input({
+        "blade_mass": 1.5,  # kg
+        "blade_tip_radius": 0.28,  # m
+        "omega": 1200.0,  # rad/s
+        "blade_inertia": 0.02,  # kg·m²
+    })
 
     # ------------------------------------------------------------------
     # Inlet duct inputs
@@ -118,7 +110,7 @@ class EngineFrame(Duct):
     # ------------------------------------------------------------------
 
     #: [m]   Axial length of the casing barrel
-    length_casing: float = Input(2.0)
+    casing_length: float = Input(0.5)
 
     #: [m]   Wall thickness at the casing inlet face
     casing_inlet_wall_thickness: float = Input(0.012)
@@ -165,6 +157,10 @@ class EngineFrame(Duct):
         (0.95, 0.089),  # turbine outlet     — slight expansion, matches nozzle r_inlet_inner
     ])
 
+    pressure_ratio: float = Input(1.0)  # Frame is structural, no aero pressure loss
+    isos_efficiency: float = Input(1.0)  # Frame is structural, no aero work
+    x_offset: float = Input(0.0)  # Frame always starts at global origin
+
     # ------------------------------------------------------------------
     # Override Duct @Input slots — wire frame-level values
     # ------------------------------------------------------------------
@@ -173,16 +169,6 @@ class EngineFrame(Duct):
     def inflow_conditions(self):
         """Frame inlet = station 1 flow conditions."""
         return self.inlet_inflow
-
-    @Input
-    def pressure_ratio(self):
-        """No aero pressure loss across the structural frame."""
-        return 1.0
-
-    @Input
-    def isos_efficiency(self):
-        """Isentropic efficiency = 1 (structural component, no work)."""
-        return 1.0
 
     @Input
     def Mach_out(self):
@@ -197,17 +183,12 @@ class EngineFrame(Duct):
     @Input
     def length(self):
         """Total axial length of the frame [m]."""
-        return self.inlet_length + self.length_casing + self.nozzle_length
+        return self.inlet_length + self.casing_length + self.nozzle_length
 
     @Input
     def position(self):
         """Frame base position — X axis aligned with engine axial direction."""
         return rotate(XOY, 'y', 90, deg=True)
-
-    @Input
-    def x_offset(self):
-        """Frame always starts at global origin."""
-        return 0.0
 
     @Input
     def wall_thickness_inlet(self):
@@ -245,7 +226,7 @@ class EngineFrame(Duct):
     def nozzle_duct(self):
         """Nozzle end-cap — drives rear geometry and nozzle radii."""
         return Nozzle(
-            x_offset              = self.inlet_length + self.length_casing,
+            x_offset              = self.inlet_length + self.casing_length,
             inflow_conditions     = self.nozzle_inflow,
             isos_efficiency       = self.nozzle_isos_efficiency,
             Mach_out              = self.nozzle_Mach_out,
@@ -288,18 +269,18 @@ class EngineFrame(Duct):
     # ------------------------------------------------------------------
 
     @Attribute
-    def _resolved_internal_profile(self):
+    def resolved_internal_profile(self):
         """
         Converts casing-relative x to absolute coordinates and clips any
-        points that fall outside [inlet_length, inlet_length + length_casing].
+        points that fall outside [inlet_length, inlet_length + casing_length].
         This prevents internal profile points from breaching the nozzle when
-        length_casing is reduced.
+        casing_length is reduced.
         """
         return sorted(
             [
                 (self.inlet_length + x, r)
                 for x, r in self.internal_profile
-                if self.inlet_length + x <= self.inlet_length + self.length_casing
+                if self.inlet_length + x <= self.inlet_length + self.casing_length
             ],
             key=lambda p: p[0],
         )
@@ -309,12 +290,12 @@ class EngineFrame(Duct):
     # ------------------------------------------------------------------
 
     @Attribute
-    def _outer_casing_points(self):
+    def outer_casing_points(self):
         """
         For each internal profile point, compute the corresponding outer
         casing point by linear interpolation on the straight line connecting:
           - inlet duct outlet outer  (x = inlet_length,                r = inlet_duct.r_outlet_outer)
-          - nozzle duct inlet outer  (x = inlet_length + length_casing, r = nozzle_duct.r_inlet_outer)
+          - nozzle duct inlet outer  (x = inlet_length + casing_length, r = nozzle_duct.r_inlet_outer)
         These points are used in profile_points to give FittedCurve enough
         outer wall waypoints and avoid oscillation.
         """
@@ -327,7 +308,7 @@ class EngineFrame(Duct):
             / (self.nozzle_duct.profile_points[1].x - self.inlet_length),
             0.0,
         )
-        for x_abs, _ in self._resolved_internal_profile
+        for x_abs, _ in self.resolved_internal_profile
     ]
 
     # ------------------------------------------------------------------
@@ -336,7 +317,22 @@ class EngineFrame(Duct):
     # ------------------------------------------------------------------
 
     @Attribute
-    def _inlet_highlight_idx(self):
+    def inlet_inner(self):
+        """
+        Inner half of the inlet meridian:
+        outlet_inner → highlight  (decreasing x, starts at x=inlet_length).
+        """
+        return self.inlet_duct.profile_points[: self.inlet_highlight_idx + 1]
+
+    @Attribute
+    def inlet_outer(self):
+        """highlight → outlet_outer (from highlight_idx to outlet_outer_idx)."""
+        return self.inlet_duct.profile_points[
+            self.inlet_highlight_idx: self.inlet_outlet_outer_idx + 1
+        ]
+
+    @Attribute
+    def inlet_highlight_idx(self):
         """Index of the highlight point (minimum x) in inlet_duct.profile_points."""
         return min(
             range(len(self.inlet_duct.profile_points)),
@@ -344,7 +340,7 @@ class EngineFrame(Duct):
         )
 
     @Attribute
-    def _inlet_outlet_outer(self):
+    def inlet_outlet_outer(self):
         """Point at (inlet_length, r_outlet_outer) — junction with outer casing."""
         return max(
             (p for p in self.inlet_duct.profile_points if abs(p.x - self.inlet_length) < 1e-4),
@@ -352,27 +348,12 @@ class EngineFrame(Duct):
         )
 
     @Attribute
-    def _inlet_outlet_outer_idx(self):
+    def inlet_outlet_outer_idx(self):
         """Index of outlet_outer point in inlet_duct.profile_points."""
         return max(
             (i for i, p in enumerate(self.inlet_duct.profile_points) if abs(p.x - self.inlet_length) < 1e-4),
             key=lambda i: self.inlet_duct.profile_points[i].y,
         )
-
-    @Attribute
-    def _inlet_inner(self):
-        """
-        Inner half of the inlet meridian:
-        outlet_inner → highlight  (decreasing x, starts at x=inlet_length).
-        """
-        return self.inlet_duct.profile_points[: self._inlet_highlight_idx + 1]
-
-    @Attribute
-    def _inlet_outer(self):
-        """highlight → outlet_outer (from highlight_idx to outlet_outer_idx)."""
-        return self.inlet_duct.profile_points[
-            self._inlet_highlight_idx: self._inlet_outlet_outer_idx + 1
-        ]
 
     # ------------------------------------------------------------------
     # Unified wall profile points
@@ -387,67 +368,45 @@ class EngineFrame(Duct):
         → inlet outer → highlight.
         """
         return (
-                list(reversed(self._inlet_inner))  # highlight → outlet_inner (increasing x)
-                + [Point(x, r, 0.0) for x, r in self._resolved_internal_profile]  # internal (increasing x)
+                list(reversed(self.inlet_inner))  # highlight → outlet_inner (increasing x)
+                + [Point(x, r, 0.0) for x, r in self.resolved_internal_profile]  # internal (increasing x)
                 + [self.nozzle_duct.profile_points[0]]  # nozzle inner inlet
                 + [self.nozzle_duct.profile_points[-1]
                    if not self.nozzle_duct.is_convergent_divergent
                    else self.nozzle_duct.profile_points[3]]  # nozzle inner outlet
                 + [self.nozzle_duct.profile_points[2]]  # nozzle outer outlet
                 + [self.nozzle_duct.profile_points[1]]  # nozzle outer inlet
-                + list(reversed(self._outer_casing_points))  # outer casing (decreasing x)
-                + self._inlet_outer[1:]  # inlet outer (decreasing x to highlight)
+                + list(reversed(self.outer_casing_points))  # outer casing (decreasing x)
+                + self.inlet_outer[1:]  # inlet outer (decreasing x to highlight)
         )
 
     @Attribute
-    def _outer_casing_points_reversed(self):
-        return list(reversed(self._outer_casing_points))
+    def outer_casing_points_reversed(self):
+        return list(reversed(self.outer_casing_points))
 
     @Part
-    def _curve_inlet_inner(self):
+    def curveinlet_inner(self):
         """Inlet inner wall: highlight → outlet_inner (increasing x)."""
-        return FittedCurve(points=list(reversed(self._inlet_inner)), hidden=True)
+        return FittedCurve(points=list(reversed(self.inlet_inner)), hidden=True)
 
     @Part
-    def _curve_internal(self):
+    def curve_internal(self):
         """
         Inner wall ending at nozzle inner inlet.
-        Nozzle inner geometry (including C-D throat) handled by _curve_outer_casing.
+        Nozzle inner geometry (including C-D throat) handled by curve_outer_casing.
         """
         return BSplineCurve(
             control_points=(
-                    [self._inlet_inner[0]]
-                    + [Point(x, r, 0.0) for x, r in self._resolved_internal_profile]
+                    [self.inlet_inner[0]]
+                    + [Point(x, r, 0.0) for x, r in self.resolved_internal_profile]
                     + [self.nozzle_duct.profile_points[0]]
             ),
             degree=1,
             hidden=True,
         )
-    # @Part
-    # def _curve_nozzle_inner(self):
-    #     return Polygon(
-    #         points=[
-    #             self.nozzle_duct.profile_points[0],
-    #             self.nozzle_duct.profile_points[3]
-    #             if not self.nozzle_duct.is_convergent_divergent
-    #             else self.nozzle_duct.profile_points[3],
-    #         ],
-    #         hidden=True,
-    #     )
-    #
-    # @Part
-    # def _curve_nozzle_outer(self):
-    #     return Polygon(
-    #         points=[
-    #             self.nozzle_duct.profile_points[3],
-    #             self.nozzle_duct.profile_points[2],
-    #             self.nozzle_duct.profile_points[1],
-    #         ],
-    #         hidden=True,
-    #     )
-
+    
     @Part
-    def _curve_outer_casing(self):
+    def curve_outer_casing(self):
         """
         Full nozzle box traversal + outer casing.
         For C-D nozzle: includes throat point [4] on the inner wall path.
@@ -463,18 +422,18 @@ class EngineFrame(Duct):
                     )
                     + [self.nozzle_duct.profile_points[2]]  # nozzle outer outlet
                     + [self.nozzle_duct.profile_points[1]]  # nozzle outer inlet
-                    + self._outer_casing_points_reversed
-                    + [self._inlet_outlet_outer]
+                    + self.outer_casing_points_reversed
+                    + [self.inlet_outlet_outer]
             ),
             degree=1,
             hidden=True,
         )
 
     @Part
-    def _curve_inlet_outer(self):
+    def curveinlet_outer(self):
         """Inlet outer wall: outlet_outer → highlight."""
         return FittedCurve(
-            points=list(reversed(self._inlet_outer)),  # outlet_outer → highlight
+            points=list(reversed(self.inlet_outer)),  # outlet_outer → highlight
             hidden=True,
         )
 
@@ -482,10 +441,10 @@ class EngineFrame(Duct):
     def wall_profile(self):
         return ComposedCurve(
             built_from=[
-                self._curve_inlet_inner,  # highlight        → outlet_inner
-                self._curve_internal,  # outlet_inner     → nozzle inner outlet
-                self._curve_outer_casing,  # nozzle inner outlet → inlet outlet outer
-                self._curve_inlet_outer,  # inlet outlet outer → highlight
+                self.curveinlet_inner,  # highlight        → outlet_inner
+                self.curve_internal,  # outlet_inner     → nozzle inner outlet
+                self.curve_outer_casing,  # nozzle inner outlet → inlet outlet outer
+                self.curveinlet_outer,  # inlet outlet outer → highlight
             ],
             hidden=True,
         )
@@ -502,7 +461,7 @@ class EngineFrame(Duct):
         return (
             2.0 * math.pi
             * (self.inlet_duct.r_outlet_inner + self.nozzle_duct.r_inlet_inner) / 2.0
-            * self.length_casing
+            * self.casing_length
         )
 
     @Attribute
@@ -512,8 +471,8 @@ class EngineFrame(Duct):
         E_k = 0.5 * m * v_tip^2 + 0.5 * I * omega^2
         """
         return (
-            0.5 * self.blade_mass * (self.blade_tip_radius * self.omega) ** 2
-            + 0.5 * self.blade_inertia * self.omega ** 2
+            0.5 * self.blade_properties["blade_mass"] * (self.blade_properties["blade_tip_radius"] * self.blade_properties["omega"]) ** 2
+            + 0.5 * self.blade_properties["blade_inertia"] * self.blade_properties["omega"] ** 2
         )
 
     @Attribute
@@ -572,14 +531,6 @@ class EngineFrame(Duct):
         self.sheet_thickness = self.sheet_thickness_required
         return self.sheet_thickness
 
-    # ------------------------------------------------------------------
-    # Mass properties
-    # ------------------------------------------------------------------
-
-    @Attribute
-    def frame_weight(self):
-        """Total frame mass [kg] — delegates to Duct.weight (surface * t * rho)."""
-        return self.weight
 
     # ------------------------------------------------------------------
     # Validation
@@ -588,15 +539,15 @@ class EngineFrame(Duct):
     def validate(self):
         warnings = super().validate()
 
-        if self.blade_mass <= 0.0:
+        if self.blade_properties["blade_mass"] <= 0.0:
             warnings.append(
-                f"EngineFrame: blade_mass={self.blade_mass:.3f} kg must be > 0.")
-        if self.blade_tip_radius <= 0.0:
+                f"EngineFrame: blade_mass={self.blade_properties['blade_mass']:.3f} kg must be > 0.")
+        if self.blade_properties["blade_tip_radius"] <= 0.0:
             warnings.append(
-                f"EngineFrame: blade_tip_radius={self.blade_tip_radius:.4f} m must be > 0.")
-        if self.omega <= 0.0:
+                f"EngineFrame: blade_tip_radius={self.blade_properties['blade_tip_radius']:.4f} m must be > 0.")
+        if self.blade_properties["omega"] <= 0.0:
             warnings.append(
-                f"EngineFrame: omega={self.omega:.1f} rad/s must be > 0.")
+                f"EngineFrame: omega={self.blade_properties['omega']:.1f} rad/s must be > 0.")
         if self.safety_factor < 1.5:
             warnings.append(
                 f"EngineFrame: safety_factor={self.safety_factor:.2f} "
@@ -611,16 +562,16 @@ class EngineFrame(Duct):
         if self.sheet_thickness <= 0.0:
             warnings.append(
                 f"EngineFrame: sheet_thickness={self.sheet_thickness:.4f} m must be > 0.")
-        if self.length_casing <= 0.0:
+        if self.casing_length <= 0.0:
             warnings.append(
-                f"EngineFrame: length_casing={self.length_casing:.3f} m must be > 0.")
+                f"EngineFrame: casing_length={self.casing_length:.3f} m must be > 0.")
 
-        if self._resolved_internal_profile:
+        if self.resolved_internal_profile:
             x_start = self.inlet_length
-            x_end = self.inlet_length + self.length_casing
+            x_end = self.inlet_length + self.casing_length
 
             # Check first internal point against inlet outlet outer radius
-            r_first = self._resolved_internal_profile[0][1]
+            r_first = self.resolved_internal_profile[0][1]
             if r_first >= self.inlet_duct.r_outlet_outer:
                 warnings.append(
                     f"EngineFrame: internal_profile first point r={r_first:.4f} m "
@@ -631,7 +582,7 @@ class EngineFrame(Duct):
                     f"EngineFrame: internal_profile first point r={r_first:.4f} m must be > 0.")
 
             # Check last internal point against nozzle inlet outer radius
-            r_last = self._resolved_internal_profile[-1][1]
+            r_last = self.resolved_internal_profile[-1][1]
             if r_last >= self.nozzle_duct.r_inlet_outer:
                 warnings.append(
                     f"EngineFrame: internal_profile last point r={r_last:.4f} m "
@@ -639,11 +590,11 @@ class EngineFrame(Duct):
                     f"Inner wall breaches outer casing at nozzle junction.")
 
             # Check every internal point against the linearly interpolated outer casing radius
-            for x_abs, r in self._resolved_internal_profile:
+            for x_abs, r in self.resolved_internal_profile:
                 r_outer_at_x = (
                         self.inlet_duct.r_outlet_outer
                         + (self.nozzle_duct.r_inlet_outer - self.inlet_duct.r_outlet_outer)
-                        * (x_abs - x_start) / self.length_casing
+                        * (x_abs - x_start) / self.casing_length
                 )
                 if r >= r_outer_at_x:
                     warnings.append(
@@ -656,14 +607,14 @@ class EngineFrame(Duct):
                         f"has r={r:.4f} m — must be > 0.")
 
             # Check internal profile points do not exceed casing length
-            x_casing_end = self.inlet_length + self.length_casing
+            x_casing_end = self.inlet_length + self.casing_length
             for x_rel, r in self.internal_profile:
                 x_abs = self.inlet_length + x_rel
                 if x_abs > x_casing_end:
                     warnings.append(
                         f"EngineFrame: internal_profile point at x_rel={x_rel:.3f} m "
                         f"(x_abs={x_abs:.3f} m) exceeds casing end at x={x_casing_end:.3f} m. "
-                        f"Point discarded. Increase length_casing or reduce x_rel.")
+                        f"Point discarded. Increase casing_length or reduce x_rel.")
 
         return warnings
 
@@ -688,7 +639,7 @@ if __name__ == "__main__":
         inlet_inflow=station_1,
         nozzle_inflow=station_6,
         inlet_length=0.2,
-        length_casing=1.0,
+        casing_length=1.0,
         nozzle_length=0.3,
         casing_inlet_wall_thickness=0.012,
         casing_outlet_wall_thickness=0.012,
@@ -705,10 +656,12 @@ if __name__ == "__main__":
         material_name="Ti-6Al-4V",
         sheet_thickness=0.003,
         safety_factor=1.5,
-        blade_mass=1.5,
-        blade_tip_radius=0.28,
-        omega=1200.0,
-        blade_inertia=0.02,
+        blade_properties={
+            "blade_mass": 1.5,
+            "blade_tip_radius": 0.28,
+            "omega": 1200.0,
+            "blade_inertia": 0.02,
+        },
         internal_profile=[
             (0.02, 0.080),
             (0.35, 0.055),
@@ -731,7 +684,7 @@ if __name__ == "__main__":
         inlet_inflow=station_1,
         nozzle_inflow=station_6,
         inlet_length=0.2,
-        length_casing=1.0,
+        casing_length=1.0,
         nozzle_length=0.3,
         casing_inlet_wall_thickness=0.012,
         casing_outlet_wall_thickness=0.012,
@@ -748,10 +701,12 @@ if __name__ == "__main__":
         material_name="Ti-6Al-4V",
         sheet_thickness=0.003,
         safety_factor=1.5,
-        blade_mass=1.5,
-        blade_tip_radius=0.28,
-        omega=1200.0,
-        blade_inertia=0.02,
+        blade_properties={
+            "blade_mass": 1.5,
+            "blade_tip_radius": 0.28,
+            "omega": 1200.0,
+            "blade_inertia": 0.02,
+        },
         internal_profile=[
             (0.02, 0.999),  # r deliberately too large — breaches outer casing
             (0.35, 0.075),
@@ -770,7 +725,7 @@ if __name__ == "__main__":
         inlet_inflow=station_1,
         nozzle_inflow=station_6,
         inlet_length=0.2,
-        length_casing=1.0,
+        casing_length=1.0,
         nozzle_length=0.3,
         casing_inlet_wall_thickness=0.012,
         casing_outlet_wall_thickness=0.012,
@@ -787,10 +742,12 @@ if __name__ == "__main__":
         material_name="Ti-6Al-4V",
         sheet_thickness=0.0001,  # deliberately too thin
         safety_factor=1.5,
-        blade_mass=1.5,
-        blade_tip_radius=0.28,
-        omega=1200.0,
-        blade_inertia=0.02,
+        blade_properties={
+            "blade_mass": 1.5,
+            "blade_tip_radius": 0.28,
+            "omega": 1200.0,
+            "blade_inertia": 0.02,
+        },
         internal_profile=[
             (0.02, 0.080),
             (0.35, 0.075),
@@ -817,7 +774,7 @@ if __name__ == "__main__":
         print(f"  length        : {frame.length:.3f} m")
         print(f"  r_inlet_inner : {frame.r_inlet_inner:.4f} m")
         print(f"  r_outlet_inner: {frame.r_outlet_inner:.4f} m")
-        print(f"  weight        : {frame.frame_weight:.2f} kg")
+        print(f"  weight        : {frame.weight:.2f} kg")
         print(f"  E_k           : {frame.kinetic_energy_blade_off:.1f} J")
         print(f"  E_s           : {frame.strain_energy_casing:.1f} J")
         print(f"  margin        : {frame.containment_margin:.3f}")
