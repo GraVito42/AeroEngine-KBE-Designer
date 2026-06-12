@@ -25,10 +25,25 @@ with '_'.
 import os
 import re
 import subprocess
+from pathlib import Path
+
+# Project root: directory containing MultallSolver.py
+PROJECT_ROOT = Path(__file__).resolve().parent
+
+def _resolve_absolute_path(path):
+    """Resolve a path to an absolute path relative to the PROJECT_ROOT.
+    
+    If the path is already absolute, it is returned unchanged.
+    """
+    if not path:
+        return path
+    p = Path(path)
+    if p.is_absolute():
+        return str(p)
+    return str((PROJECT_ROOT / p).resolve())
+
 
 from parapy.core import Base, Input, Attribute, action
-
-
 # ---------------------------------------------------------------------------
 # Module-level helpers (callable without a class instance)
 # ---------------------------------------------------------------------------
@@ -136,7 +151,7 @@ def write_meangen_in(work_dir, meangen_input):
     str
         Absolute path to the written meangen.in.
     """
-    os.makedirs(work_dir, exist_ok=True)
+    Path(work_dir).mkdir(parents=True, exist_ok=True)
     d   = meangen_input
     n   = int(d['n_stages'])
     axc = d['axial_chords']
@@ -202,7 +217,7 @@ def write_meangen_in(work_dir, meangen_input):
         stator_x_tmax   = d.get('stator_x_tmax',   0.50),
     ))
 
-    out_path = os.path.join(work_dir, 'meangen.in')
+    out_path = str(Path(work_dir) / 'meangen.in')
     with open(out_path, 'w') as fh:
         fh.writelines(lines)
     print(f"[MultallSolver] meangen.in written to {out_path} ({len(lines)} lines)")
@@ -212,13 +227,8 @@ def _repair_stagen_dat(path):
     """Re-insert spaces between fused numbers on MEANGEN's
     'RPM, STATIC PRESSURES THROUGH ROW' lines.
 
-    That line uses an F10.2 field. A 7-integer-digit value (e.g. 1346066.62,
-    from high-pressure turbine stages) fills the field exactly, leaving no
-    separating space, so adjacent values fuse into one token with two decimal
-    points that STAGEN's list-directed read rejects ('Bad real number in item
-    1'). Every value on the line has 2 decimals, so a fused boundary is always
-    '.dd' followed immediately by a digit or '-' -> inserting a space is safe.
-    Only this line type is touched (other lines use wider, un-fused formats).
+    Also dynamically scales down the grid points (NPOINTS_UP, NPOINTS_ON, NPOINTS_DWN)
+    if the total grid size exceeds the 500 limit of the multall-open binary.
     """
     marker = 'RPM, STATIC PRESSURES THROUGH ROW'
     with open(path, 'r') as fh:
@@ -229,10 +239,39 @@ def _repair_stagen_dat(path):
             fixed = re.sub(r'(\.\d\d)(?=[\d-])', r'\1 ', line)
             if fixed != line:
                 lines[i], changed = fixed, True
+
+    # Check for grid scaling (to fit within JD=500 limit of multall)
+    npoints_pattern = re.compile(
+        r'^\s*(\d+)\s+(\d+)\s+(\d+)\s+(NPOINTS_UP,\s*NPOINTS_ON,\s*NPOINTS_DWN.*)',
+        re.IGNORECASE
+    )
+    total_grid_points = 0
+    npoints_occurrences = []
+    for i, line in enumerate(lines):
+        m = npoints_pattern.match(line)
+        if m:
+            up = int(m.group(1))
+            on = int(m.group(2))
+            dwn = int(m.group(3))
+            total_grid_points += (up + on + dwn)
+            npoints_occurrences.append((i, up, on, dwn, m.group(4)))
+            
+    if total_grid_points > 480 and npoints_occurrences:
+        factor = 480.0 / total_grid_points
+        print(f"[MultallSolver] Total expected grid points {total_grid_points} exceeds 480. "
+              f"Scaling down grid with factor {factor:.4f}")
+        for idx, up, on, dwn, suffix in npoints_occurrences:
+            scaled_up = max(8, int(up * factor))
+            scaled_on = max(25, int(on * factor))
+            scaled_dwn = max(6, int(dwn * factor))
+            new_line = f"    {scaled_up:d}   {scaled_on:d}   {scaled_dwn:d}     {suffix.strip()}\n"
+            lines[idx] = new_line
+            changed = True
+            
     if changed:
         with open(path, 'w') as fh:
             fh.writelines(lines)
-        print(f"[MultallSolver] repaired fused numeric fields in {path}")
+        print(f"[MultallSolver] repaired and/or scaled stagen.dat at {path}")
 
 
 # ---------------------------------------------------------------------------
@@ -266,47 +305,43 @@ class MultallSolver(Base):
 
     @Attribute
     def run_dir(self):
-        """Per-run subdirectory: work_dir / <8-char hash of meangen_input>.
+        """Directory for ALL solver files — flat, no per-run subdirectory.
 
-        Embedding the hash in the path means ParaPy's attribute cache naturally
-        invalidates when any input parameter changes — no manual folder deletion
-        required. Each unique set of inputs gets its own folder; old folders are
-        kept on disk for inspection but are never reused incorrectly.
-        """
-        import hashlib, json
-        # Sort keys for deterministic serialisation; round floats to 6 sig-figs
-        # so tiny floating-point noise does not produce spurious cache misses.
-        def _normalise(v):
-            if isinstance(v, float):
-                return round(v, 6)
-            if isinstance(v, list):
-                return [_normalise(i) for i in v]
-            return v
-        normalised = {k: _normalise(v) for k, v in sorted(self.meangen_input.items())}
-        digest = hashlib.sha256(
-            json.dumps(normalised, sort_keys=True).encode()
-        ).hexdigest()[:8]
-        return os.path.join(self.work_dir, digest)
+        Everything (meangen.in/.out, stagen.dat/.out, stage_new.dat, intype,
+        flow_out, grid_out) is written directly into work_dir, which is already
+        the per-machine folder (.../compressor or .../turbine). MEANGEN, STAGEN
+        and MULTALL therefore read and write the same flat directory, which is
+        what their relative-filename I/O expects. Re-run invalidation no longer
+        relies on a path hash; it is driven by stagen_out_path depending on
+        meangen_input directly (see below)."""
+        return _resolve_absolute_path(self.work_dir)
 
     @Attribute
     def meangen_out_path(self):
         """Absolute path to meangen.out."""
-        return os.path.join(self.run_dir, 'meangen.out')
+        return str(Path(self.run_dir) / 'meangen.out')
 
     @Attribute
     def stagen_out_path(self):
-        """Absolute path to stagen.out. Accessing this triggers the low-fidelity run."""
+        """Absolute path to stagen.out. Accessing this triggers the low-fidelity run.
+
+        The bare `self.meangen_input` reference is intentional: it registers
+        meangen_input as a dependency of this attribute, so ParaPy re-runs
+        MEANGEN+STAGEN whenever any design parameter changes. With the path hash
+        gone, this is what keeps the on-disk files in sync with the inputs.
+        """
+        self.meangen_input            # explicit dependency for re-run on change
         return self._run_low_fidelity()
 
     @Attribute
     def flow_out_path(self):
         """Absolute path to the Multall flow field output."""
-        return os.path.join(self.run_dir, 'flow_out')
+        return str(Path(self.run_dir) / 'flow_out')
 
     @Attribute
     def stagen_dat_path(self):
         """Absolute path to stagen.dat."""
-        return os.path.join(self.run_dir, 'stagen.dat')
+        return str(Path(self.run_dir) / 'stagen.dat')
 
     # ------------------------------------------------------------------
     # LOW fidelity
@@ -315,23 +350,23 @@ class MultallSolver(Base):
     def _run_low_fidelity(self):
         """Write meangen.in, run MEANGEN and STAGEN. Returns path to stagen.out.
 
-        Uses run_dir (work_dir/<hash>) so each unique meangen_input gets its own
-        folder. ParaPy's cache of stagen_out_path is therefore always consistent
-        with the actual files on disk — no manual folder deletion needed.
+        Writes into run_dir, which is now the flat per-machine work_dir. Re-run
+        consistency is guaranteed by stagen_out_path depending on meangen_input,
+        so a design change overwrites the files in place.
         """
         run_dir = self.run_dir
-        os.makedirs(run_dir, exist_ok=True)
+        Path(run_dir).mkdir(parents=True, exist_ok=True)
         # Resolve exe paths to absolute BEFORE changing cwd in subprocess.
-        meangen_abs = os.path.abspath(self.meangen_exe)
-        stagen_abs  = os.path.abspath(self.stagen_exe)
+        meangen_abs = _resolve_absolute_path(self.meangen_exe)
+        stagen_abs  = _resolve_absolute_path(self.stagen_exe)
         print(f"[MultallSolver] run_dir = {run_dir}")
         write_meangen_in(run_dir, self.meangen_input)
         print("[MultallSolver] running MEANGEN ...")
         self._run_meangen(meangen_abs, cwd=run_dir)
-        _repair_stagen_dat(os.path.join(run_dir, 'stagen.dat'))  # <-- add
+        _repair_stagen_dat(str(Path(run_dir) / 'stagen.dat'))
         print("[MultallSolver] running STAGEN ...")
         self._run_stagen(stagen_abs, cwd=run_dir)
-        path = os.path.join(run_dir, 'stagen.out')
+        path = str(Path(run_dir) / 'stagen.out')
         print(f"[MultallSolver] low-fidelity run complete -> {path}")
         return path
 
@@ -351,7 +386,7 @@ class MultallSolver(Base):
                 f"  exe: {exe_path or self.meangen_exe}\n"
                 f"  cwd: {cwd}\n"
                 f"  Check the console output above for MEANGEN's error message.\n"
-                f"  meangen.in is at: {os.path.join(cwd, 'meangen.in')}"
+                f"  meangen.in is at: {str(Path(cwd) / 'meangen.in')}"
             )
 
     def _run_stagen(self, exe_path=None, cwd=None):
@@ -387,19 +422,86 @@ class MultallSolver(Base):
         MULTALL reads a format selector from 'intype' (unit 13); must contain
         'N' for the NEW_READIN format that STAGEN writes. Reads the solver deck
         from stdin (stage_new.dat piped in).
+
+        All paths resolve to run_dir, which is now the flat per-machine
+        work_dir where the low-fidelity stage wrote stagen.dat and
+        stage_new.dat, so the solver is launched in the same folder. The
+        returned flow_out_path is rooted there too, keeping everything
+        consistent.
         """
-        multall_abs = os.path.abspath(self.multall_exe)
-        with open(os.path.join(self.work_dir, 'intype'), 'w') as fh:
+        multall_abs = _resolve_absolute_path(self.multall_exe)
+        run_dir = self.run_dir
+
+        # Enforce stage limit for the pre-compiled Fortran solver
+        n_stages = self.meangen_input.get('n_stages')
+        if n_stages and n_stages > 4:
+            raise RuntimeError(
+                f"MULTALL solver limit exceeded: n_stages={n_stages} is greater than "
+                f"the maximum supported 4 stages (8 blade rows) due to fixed array dimensions "
+                f"in the Fortran executable. Please reduce n_stages to 4 or fewer."
+            )
+
+        with open(str(Path(run_dir) / 'intype'), 'w') as fh:
             fh.write('N\n')
-        with open(os.path.join(self.work_dir, 'stage_new.dat'), 'rb') as fh:
+        with open(str(Path(run_dir) / 'stage_new.dat'), 'rb') as fh:
             deck = fh.read()
-        subprocess.run(
-            [multall_abs],
-            cwd=self.work_dir,
-            input=deck,
-            stderr=subprocess.STDOUT,
-            check=True,
-        )
+        try:
+            result = subprocess.run(
+                [multall_abs],
+                cwd=run_dir,
+                input=deck,
+                capture_output=False,  # Stream directly to parent console to avoid pipe buffering
+            )
+            
+            # Post-run check: MULTALL sometimes exits with code 0 on failure (e.g., dimension errors)
+            flow_out_path = Path(self.flow_out_path)
+            if result.returncode != 0 or not flow_out_path.exists() or flow_out_path.stat().st_size == 0:
+                log_path = Path(run_dir) / 'stage.log'
+                
+                # Try to read the solver's own log file for context
+                stage_log_content = ""
+                if log_path.exists():
+                    try:
+                        with open(log_path, 'r') as log_fh:
+                            # Get last 20 lines of stage.log
+                            stage_log_content = "\n".join(log_fh.readlines()[-20:])
+                    except Exception:
+                        pass
+
+                # Format exit code
+                exit_hex = f"0x{result.returncode & 0xFFFFFFFF:08X}"
+                is_segfault = (result.returncode & 0xFFFFFFFF) == 0xC0000005
+
+                msg = (
+                    f"MULTALL solver failed or aborted (exit code {result.returncode} / {exit_hex}).\n"
+                    f"  Executable : {multall_abs}\n"
+                    f"  Working dir: {run_dir}\n"
+                )
+                if stage_log_content:
+                    msg += f"\n  Last lines of stage.log:\n{stage_log_content}\n"
+                else:
+                    msg += f"  Check the console output above for details.\n"
+                
+                if is_segfault:
+                    msg += (
+                        "\n  This is a STATUS_ACCESS_VIOLATION (segfault) inside the\n"
+                        "  Fortran solver. Common causes:\n"
+                        "    - Too many stages/rows for the solver's fixed array sizes\n"
+                        "    - Numerical instability in the flow computation\n"
+                    )
+                raise RuntimeError(msg)
+        except FileNotFoundError:
+            raise RuntimeError(
+                f"MULTALL executable not found: {multall_abs}\n"
+                f"  Check that multall_exe points to a valid path."
+            )
+        except OSError as e:
+            raise RuntimeError(
+                f"Cannot execute MULTALL: {e}\n"
+                f"  Executable: {multall_abs}\n"
+                f"  If this is a permission error, try running:\n"
+                f"    Get-ChildItem '{Path(multall_abs).parent}' | Unblock-File"
+            )
         return self.flow_out_path
 
 
@@ -460,9 +562,9 @@ if __name__ == '__main__':
 
         print("\n=== Part 2: full pipeline ===")
         stagen_out = cfd_solver.stagen_out_path
-        print("stagen.out exists:", os.path.exists(stagen_out))
+        print("stagen.out exists:", Path(stagen_out).exists())
 
         print("launching MULTALL ...")
         flow_out = cfd_solver._run_high_fidelity()
         print("flow_out path:", flow_out)
-        print("flow_out exists:", os.path.exists(flow_out))
+        print("flow_out exists:", Path(flow_out).exists())

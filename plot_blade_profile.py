@@ -5,7 +5,7 @@ Standalone plotting module for blade profiles parsed from stagen.out.
 Called from Turbomachine.plot_profiles() (@action).
 """
 
-import os
+from pathlib import Path
 
 
 def _prepare_profile(suc_raw, prs_raw, label=''):
@@ -168,9 +168,9 @@ def plot_blade_profiles(stage_data, machine_type='compressor', save_dir=None):
         # Display or save
         # ------------------------------------------------------------------
         if save_dir is not None:
-            os.makedirs(save_dir, exist_ok=True)
-            path_a = os.path.join(save_dir, f'stage_{stage_idx+1}_sections.png')
-            path_b = os.path.join(save_dir, f'stage_{stage_idx+1}_flow_view.png')
+            Path(save_dir).mkdir(parents=True, exist_ok=True)
+            path_a = str(Path(save_dir) / f'stage_{stage_idx+1}_sections.png')
+            path_b = str(Path(save_dir) / f'stage_{stage_idx+1}_flow_view.png')
             fig_a.savefig(path_a, dpi=150, bbox_inches='tight')
             fig_b.savefig(path_b, dpi=150, bbox_inches='tight')
             print(f"[plot_blade_profiles] saved {path_a}")

@@ -55,6 +55,14 @@ class Blade(GeomBase):
     r_hub          = Input(0.168)
     n_pts          = Input(80)
 
+    curve_tolerance = Input(1e-6)
+    """Tolerance [m] for the B-spline FittedCurve that defines each section
+    profile. The ParaPy default (0.001 m = 1 mm) is far too coarse for
+    thin compressor blades with ~1-2 mm physical thickness: the B-spline
+    smoother merges suction and pressure sides, collapsing the airfoil
+    into a flat plate. A value of 1e-6 m (1 µm) resolves sub-mm gaps
+    faithfully."""
+
     circumferential_angle = Input(0.0)
     """Circumferential angle [deg] of this blade around the engine axis (X).
     Set by Stage for each blade in the row.  Rotates (Y, Z) of each point
@@ -321,10 +329,17 @@ class Blade(GeomBase):
 
     @Part
     def section_profiles(self):
-        """Quantified closed FittedCurves, one per station (hidden)."""
+        """Quantified closed FittedCurves, one per station (hidden).
+
+        tolerance is set explicitly (default 1e-6 m) because the ParaPy
+        default (0.001 m = 1 mm) is comparable to the blade tip thickness
+        of thin compressor profiles, causing the B-spline to merge the
+        suction and pressure sides into a flat plate.
+        """
         return FittedCurve(
             quantify=self.n_stations,
             points=self.section_point_lists[child.index],
+            tolerance=self.curve_tolerance,
             hidden=True,
         )
 

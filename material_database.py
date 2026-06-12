@@ -10,7 +10,7 @@
 # ---------------------------------------------------------------------------
 
 import csv
-import os
+from pathlib import Path
 
 # ------------------------------------------------------------------
 # Hardcoded fallback (used if CSV is not available)
@@ -96,7 +96,7 @@ def load_matweb_csv(csv_path: str) -> dict:
     """
     db = {}
 
-    if not os.path.isfile(csv_path):
+    if not Path(csv_path).is_file():
         print(f"[MaterialDB] CSV not found: {csv_path}. Using fallback.")
         return db
 

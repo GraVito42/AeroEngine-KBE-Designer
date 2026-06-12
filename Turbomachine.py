@@ -27,7 +27,6 @@ Coordinate system (engine frame): X axial, Y radial, Z tangential.
 
 from pathlib import Path
 import math
-import os
 
 from parapy.core import Input, Attribute, Part, child, action
 from parapy.geom import GeomBase, Compound
@@ -161,12 +160,24 @@ class Turbomachine(EngineComponent, GeomBase):
 
     inlet_rotor_max_AR = Input(3.5)
     """Max span/chord aspect ratio for the FIRST-stage rotor's CAD blade.
-    The inlet rotor sits in the widest annulus, so it is the tallest and most
-    slender blade in the machine; its LoftedSolid degenerates at the tip when
-    the metric chord from stagen.dat leaves it too thin. If its parsed AR
-    exceeds this cap, its per-section chords are scaled up so the loft is
-    robust. Geometry only — the CFD already ran on the real chord. Set very
-    high (e.g. 1e9) to disable."""
+    Deprecated: use max_aspect_ratio_cap instead."""
+
+    enable_cad_chord_capping = Input(True)
+    """If True, scales up the CAD chords of rows that are too slender or too thin
+    so that the LoftedSolid is robust and does not degenerate at the tip."""
+
+    @Input
+    def max_aspect_ratio_cap(self):
+        """Max span/chord aspect ratio for any CAD blade row. By default,
+        falls back to `inlet_rotor_max_AR` to preserve compatibility.
+        """
+        return self.inlet_rotor_max_AR
+
+    min_blade_chord_m = Input(0.020)
+    """Minimum mean chord [m] allowed for a CAD blade row. If a row's parsed mean
+    chord falls below this, its chords are scaled up to prevent degeneration.
+    Default 20 mm ensures at least ~3 mm physical tip thickness, well above
+    the FittedCurve tolerance. Set to 0.0 or negative to disable."""
 
     mid_chord_fraction = Input(0.40)
     """Ratio of axial chord to true chord (cos of stagger angle approximation).
@@ -383,7 +394,7 @@ class Turbomachine(EngineComponent, GeomBase):
         row_order = [r['row_type'] for r in meagen_rows]
         stages = StageParser.parse(out_path, row_order=row_order, machine_type=self.machine_type)
         merged = MeagenParser.merge(stages, meagen_rows)
-        self._cap_inlet_rotor_aspect_ratio(merged)  # <-- add
+        self._cap_blade_rows_aspect_ratio(merged)  # <-- updated
         for i, st in enumerate(merged):
             rc = sum(st['rotor']['chords'])  / len(st['rotor']['chords'])
             sc = sum(st['stator']['chords']) / len(st['stator']['chords'])
@@ -392,32 +403,52 @@ class Turbomachine(EngineComponent, GeomBase):
                   f"stator_LE_offset={rc + self.axial_gap:.4f}m")
         return merged
 
-    def _cap_inlet_rotor_aspect_ratio(self, merged):
-        """Thicken the first-stage rotor if it is too slender to loft.
+    def _cap_blade_rows_aspect_ratio(self, merged):
+        """Thicken any blade row that is too slender or too thin to loft.
 
-        The inlet rotor is the tallest blade (widest annulus), so its
-        LoftedSolid degenerates at the tip when span/chord is large. Scale its
-        per-section chords up so span/chord <= inlet_rotor_max_AR. This widens
-        the displayed CAD blade only; the CFD already ran on the real chord,
-        and because stage_data is mutated here the axial stacking sees the same
-        chord, so downstream rows stay correctly spaced.
+        If enable_cad_chord_capping is True, we iterate through all stages and
+        rows (rotor and stator) and scale up the chords if:
+          1. The aspect ratio (span/chord) exceeds max_aspect_ratio_cap.
+          2. The mean chord is less than min_blade_chord_m.
+        This modifies the displayed CAD blade chords only; CFD calculations are
+        unaffected because the solver has already run.
         """
-        if not merged:
+        if not self.enable_cad_chord_capping or not merged:
             return
-        rotor = merged[0]['rotor']  # stage 0 rotor == inlet rotor (compressor)
-        r = rotor['r_sections']
-        span = r[-1] - r[0]
-        mean_chord = sum(rotor['chords']) / len(rotor['chords'])
-        if span <= 0.0 or mean_chord <= 0.0:
-            return
-        ar = span / mean_chord
-        if ar <= self.inlet_rotor_max_AR:
-            return
-        factor = ar / self.inlet_rotor_max_AR
-        rotor['chords'] = [c * factor for c in rotor['chords']]
-        print(f"[stage_data] inlet rotor AR={ar:.2f} > {self.inlet_rotor_max_AR} "
-              f"-> chords x{factor:.2f} (mean {mean_chord:.4f} -> "
-              f"{mean_chord * factor:.4f} m, CAD only)")
+
+        for stage_idx, stage in enumerate(merged):
+            for row_name in ['rotor', 'stator']:
+                row = stage[row_name]
+                r = row['r_sections']
+                if not r or len(r) < 2:
+                    continue
+                span = r[-1] - r[0]
+                mean_chord = sum(row['chords']) / len(row['chords'])
+                if span <= 0.0 or mean_chord <= 0.0:
+                    continue
+
+                ar = span / mean_chord
+                
+                # Check aspect ratio cap
+                factor_ar = 1.0
+                if ar > self.max_aspect_ratio_cap:
+                    factor_ar = ar / self.max_aspect_ratio_cap
+                
+                # Check minimum chord cap
+                factor_chord = 1.0
+                if self.min_blade_chord_m > 0.0 and mean_chord < self.min_blade_chord_m:
+                    factor_chord = self.min_blade_chord_m / mean_chord
+
+                factor = max(factor_ar, factor_chord)
+                if factor > 1.0:
+                    row['chords'] = [c * factor for c in row['chords']]
+                    print(f"[stage_data] Stage {stage_idx} {row_name} scaled by {factor:.2f}x "
+                          f"(AR={ar:.2f} limit={self.max_aspect_ratio_cap:.2f}, "
+                          f"mean_chord={mean_chord:.4f} m min={self.min_blade_chord_m:.4f} m, CAD only)")
+
+    def _cap_inlet_rotor_aspect_ratio(self, merged):
+        """Deprecated: use _cap_blade_rows_aspect_ratio instead."""
+        self._cap_blade_rows_aspect_ratio(merged)
 
     # ------------------------------------------------------------------
     # Axial stacking of the stages
@@ -556,6 +587,11 @@ class Turbomachine(EngineComponent, GeomBase):
             warnings.append(
                 f"{self.label}: n_stages={self.n_stages} but delta_H/delta_H_stage "
                 f"implies {self.stages_required} stage(s) — check the work split.")
+        if self.n_stages > 4:
+            warnings.append(
+                f"{self.label}: n_stages={self.n_stages} exceeds the MULTALL solver "
+                f"maximum limit of 4 stages (8 rows) due to fixed array dimensions "
+                f"in the Fortran executable.")
         return warnings
 
 

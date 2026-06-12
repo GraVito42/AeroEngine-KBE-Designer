@@ -19,8 +19,12 @@ Coordinate system (engine frame): X axial, Y radial, Z tangential.
 """
 
 from parapy.core import Input, Attribute
+from pathlib import Path
 
 from Turbomachine import Turbomachine
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+
 
 
 class Turbine(Turbomachine):
@@ -32,6 +36,33 @@ class Turbine(Turbomachine):
 
     machine_type = Input('turbine')
     """Override the base default: a Turbine is always a 'T' machine."""
+
+    # ------------------------------------------------------------------
+    # Working directory
+    # ------------------------------------------------------------------
+
+    working_directory = Input('Multall/DesignExample/test_run')
+    """Root directory for this turbine's CFD run. All Meangen/Stagen/Multall
+    files are rooted in a 'turbine' subdirectory below this path (see work_dir),
+    so a turbine and a compressor that share the same working_directory never
+    collide on disk."""
+
+    @Input
+    def work_dir(self):
+        """Per-machine Multall working directory: <working_directory>/turbine.
+
+        Overrides the Turbomachine.work_dir default. The 'turbine' subdirectory
+        is created here (idempotent) so it exists before MultallSolver writes
+        any file into it. Pass work_dir explicitly to bypass working_directory
+        entirely.
+        """
+        base_path = Path(self.working_directory)
+        if not base_path.is_absolute():
+            base_path = PROJECT_ROOT / base_path
+        path = base_path / 'turbine'
+        path.mkdir(parents=True, exist_ok=True)
+        return str(path.resolve())
+
 
     # ------------------------------------------------------------------
     # Turbine-specific design knobs (UML: Turbine)
