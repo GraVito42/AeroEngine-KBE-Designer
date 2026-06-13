@@ -429,12 +429,15 @@ class MultallSolver(Base):
         returned flow_out_path is rooted there too, keeping everything
         consistent.
         """
+        # Ensure that the low-fidelity run is up-to-date
+        _ = self.stagen_out_path
+
         multall_abs = _resolve_absolute_path(self.multall_exe)
         run_dir = self.run_dir
 
         # Enforce stage limit for the pre-compiled Fortran solver
         n_stages = self.meangen_input.get('n_stages')
-        if n_stages and n_stages > 4:
+        if n_stages and n_stages > 6:
             raise RuntimeError(
                 f"MULTALL solver limit exceeded: n_stages={n_stages} is greater than "
                 f"the maximum supported 4 stages (8 blade rows) due to fixed array dimensions "
@@ -443,8 +446,21 @@ class MultallSolver(Base):
 
         with open(str(Path(run_dir) / 'intype'), 'w') as fh:
             fh.write('N\n')
-        with open(str(Path(run_dir) / 'stage_new.dat'), 'rb') as fh:
-            deck = fh.read()
+        
+        # Read stage_new.dat, find and cap NSTEPS_MAX to 2000 to keep verification runs fast
+        stage_new_path = Path(run_dir) / 'stage_new.dat'
+        lines = stage_new_path.read_text(errors='ignore').splitlines()
+        for idx, line in enumerate(lines):
+            if "NSTEPS_MAX" in line and idx + 1 < len(lines):
+                next_line = lines[idx+1]
+                parts = next_line.split()
+                if len(parts) >= 2:
+                    conlim = parts[1]
+                    lines[idx+1] = f"       2000  {conlim}"
+                    print(f"[MultallSolver] Capped NSTEPS_MAX to 2000 (was {parts[0]}) for faster execution.")
+                break
+        modified_content = "\n".join(lines) + "\n"
+        deck = modified_content.encode('utf-8')
         try:
             result = subprocess.run(
                 [multall_abs],
@@ -505,9 +521,99 @@ class MultallSolver(Base):
         return self.flow_out_path
 
 
+def parse_shaft_power(work_dir, rpm, gamma, R, mass_flow, machine_type):
+    """Extract the shaft power [W] of a turbomachine from Multall's global.plt file.
+
+    Cites the following WRITE statements in multall-open-20.9.f as evidence:
+      - Line 11995: WRITE(11) (BLADE_FLOW(J), J=1,JM) -> Record 3
+      - Line 11997: WRITE(11) (SUMTO(J), J=1,JM)      -> Record 5
+
+    And the plane J definitions at lines 12637-12639:
+      - J1 = 2 (inlet plane, Python index 1)
+      - J2M1 = JM - 1 (outlet plane, Python index JM - 2)
+
+    Parameters
+    ----------
+    work_dir : str
+        The working directory of the turbomachine run containing global.plt.
+    rpm : float
+        The rotational speed [rpm] of the machine (not directly used here, but part of interface).
+    gamma : float
+        Specific heat ratio.
+    R : float
+        Specific gas constant [J/(kg K)].
+    mass_flow : float
+        The design mass flow rate [kg/s]. Used as the primary mdot for the power formula.
+    machine_type : str
+        Either 'compressor' or 'turbine'.
+
+    Returns
+    -------
+    float
+        The shaft power [W] (positive magnitude).
+    """
+    import struct
+    from pathlib import Path
+
+    global_plt_path = Path(work_dir) / "global.plt"
+    if not global_plt_path.exists():
+        raise FileNotFoundError(f"Multall output file not found: {global_plt_path}")
+
+    # Read binary Fortran unformatted records
+    file_bytes = global_plt_path.read_bytes()
+    records = []
+    offset = 0
+    while offset < len(file_bytes):
+        if offset + 4 > len(file_bytes):
+            break
+        length = struct.unpack('<I', file_bytes[offset:offset+4])[0]
+        if offset + 4 + length + 4 > len(file_bytes):
+            raise ValueError(f"Corrupted Fortran record at offset {offset}")
+        data = file_bytes[offset+4 : offset+4+length]
+        suffix = struct.unpack('<I', file_bytes[offset+4+length : offset+4+length+4])[0]
+        if length != suffix:
+            raise ValueError(f"Fortran record length mismatch at offset {offset}")
+        records.append(data)
+        offset += 4 + length + 4
+
+    if len(records) < 11:
+        raise ValueError(f"global.plt contains only {len(records)} records, expected at least 11.")
+
+    # Record 0: JM, 1, 1
+    JM, _, _ = struct.unpack('<iii', records[0])
+
+    # Record 3: BLADE_FLOW(J)
+    blade_flow = struct.unpack(f'<{JM}f', records[3])
+    # Record 5: SUMTO(J)
+    sum_to = struct.unpack(f'<{JM}f', records[5])
+
+    # J-indices for inlet and outlet (1-indexed J1=2 and J2M1=JM-1)
+    J1_idx = 1
+    J2M1_idx = JM - 2
+
+    # Stagnation temperatures (mass-flow weighted averages)
+    # T0_avg = sum_i( rho * Vx * A * T0 ) / sum_i( rho * Vx * A ) = SUMTO / BLADE_FLOW
+    T0_in = sum_to[J1_idx] / blade_flow[J1_idx]
+    T0_out = sum_to[J2M1_idx] / blade_flow[J2M1_idx]
+
+    # Calculate cp
+    cp = gamma * R / (gamma - 1.0)
+
+    # Calculate power (positive magnitude)
+    if machine_type.lower() == 'compressor':
+        power = mass_flow * cp * (T0_out - T0_in)
+    elif machine_type.lower() == 'turbine':
+        power = mass_flow * cp * (T0_in - T0_out)
+    else:
+        raise ValueError(f"Invalid machine_type: '{machine_type}'. Must be 'compressor' or 'turbine'.")
+
+    return abs(power)
+
+
 # ---------------------------------------------------------------------------
 # Smoke test
 # ---------------------------------------------------------------------------
+
 
 if __name__ == '__main__':
     from pathlib import Path

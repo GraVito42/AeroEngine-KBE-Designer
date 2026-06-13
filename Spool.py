@@ -6,20 +6,11 @@ hosts the (low-fidelity -> high-fidelity) power-balance action.
 
 Inheritance:
     Spool(EngineComponent, GeomBase)
-  - EngineComponent: thermo-fluid contract + material lookup (self.material),
-    volume/weight (from self.body), position frame (X axial, Y radial).
+  - EngineComponent: thermo-fluid contract, material lookup, volume/weight, position frame.
   - GeomBase: hosts the shaft RevolvedSolid and the two turbomachine children.
 
 Coordinate system (engine frame): X axial, Y radial, Z tangential.
-Shaft geometry is authored directly in (X_axial, Y_radial) and revolved about
-the global X axis, matching the working Duct.body / EngineFrame convention.
-
-Shaft profile:
-  - spool_index == 0 (HP, SOLID): RevolvedSolid from a ComposedCurve of
-      FittedCurve(outer profile)  ->  LineSegment(closure along the axis r = 0).
-  - spool_index  > 0 (IP/LP, HOLLOW): outer + inner walls offset by gap() /
-      shaft_thickness, closed by nose/tail caps. See TODO #1-#3 — only the HP
-      (solid) path is exercised by the smoke test.
+Shaft geometry is revolved about the global X axis.
 """
 
 import math
@@ -27,325 +18,426 @@ import os
 
 from parapy.core import Input, Attribute, Part, action
 from parapy.geom import (GeomBase, Point, FittedCurve, LineSegment,
-                         ComposedCurve, RevolvedSolid, translate)
+                         ComposedCurve, RevolvedSolid)
 
 from EngineComponent import EngineComponent
 from Compressor import Compressor
 from Turbine import Turbine
 from Flow_station import FlowStation
+from MultallSolver import parse_shaft_power
 
 
 class Spool(EngineComponent, GeomBase):
     """Compressor + Turbine on one shaft, with a sequential power balance."""
 
     # ------------------------------------------------------------------
-    # Inputs — architecture / sizing
+    # Inputs — Sizing, Sparing, and Architecture
     # ------------------------------------------------------------------
-    spool_index = Input(0)          # 0 = HP (innermost), 1 = IP, 2 = LP
-    rpm         = Input(15000)          # shaft speed [rev/min]
+    design_radius = Input()            # Meanline radius for meangen [m]
+    compressor_delta_h = Input()       # Total specific enthalpy rise [J/kg]
+    turbine_delta_h = Input()          # Total specific enthalpy drop [J/kg]
+    compressor_n_stages = Input()      # Number of compressor stages
+    turbine_n_stages = Input()         # Number of turbine stages
+    shaft_rpm = Input()                # Shaft rotational speed [rev/min]
 
-    r_hub_c_in  = Input(0.15)          # compressor hub radii [m]
-    r_hub_c_out = Input(0.28)
-    r_tip_c_in  = Input(0.35)          # compressor tip radii [m]
-    r_tip_c_out = Input(0.35)
+    compressor_inflow = Input()        # FlowStation at compressor inlet
+    turbine_inflow = Input()           # FlowStation at turbine inlet
 
-    r_hub_t_in  = Input(0.22)          # turbine hub radii [m]
-    r_hub_t_out = Input(0.18)
-    r_tip_t_in  = Input(0.32)          # turbine tip radii [m]
-    r_tip_t_out = Input(0.38)
+    compressor_reaction_coeff = Input(0.5)  # Compressor reaction coefficient
+    turbine_reaction_coeff = Input(0.5)     # Turbine reaction coefficient
 
-    n_stages_compressor = Input(3)
-    n_stages_turbine    = Input(1)
+    gap_length = Input()               # Inter-machine axial gap [m]
+    x_start = Input(0.0)               # Spool start X [m]
+    x_start_compressor = Input()       # Compressor LE X [m]
+    x_end = Input()                    # Spool end X [m]
 
-    design_torque = Input(50000)        # shaft design torque [N.m]
-
-    # ------------------------------------------------------------------
-    # Inputs — with defaults
-    # ------------------------------------------------------------------
-    clearance_epsilon = Input(0.01)   # inter-spool gap fraction
-    delta_min         = Input(0.005)  # minimum absolute gap / wall floor [m]
-    nose_aspect_ratio = Input(1.5)    # end-cap ellipse semi-major/semi-minor
-    loss_margin       = Input(0.15)   # power-balance margin fraction
-
-    inflow_conditions = Input()       # FlowStation at compressor inlet
-    turbine_inflow_conditions = Input()
-    # FlowStation at turbine inlet — set by COMBUSTOR exit (not compressor exit),
-    # since the combustor sits between compressor and turbine.
-
-    inner_spool_profile_norm = Input(None)
-    # list[(x_norm, r_norm)] of the adjacent inner spool's outer profile.
-    # Used only for hollow shafts (spool_index > 0). See TODO #1.
+    isos_efficiency = Input(0.90)      # Isentropic efficiency
+    loss_margin = Input(0.15)          # Power-balance margin fraction
+    spool_index = Input(0)             # 0 = HP (innermost), 1 = IP, 2 = LP
+    _cfd_runs_counter = Input(0)       # Internal counter to invalidate CFD-based attributes
 
     @Input
     def material_name(self):
-        # Default shaft material; override from the assembly if needed.
         return "Ti-6Al-4V"
 
     # ------------------------------------------------------------------
-    # EngineComponent contract — structural placeholders (shaft carries no flow).
-    # Safe defaults so the component is runnable / GUI-safe standalone.
+    # EngineComponent contract mappings & aliases
     # ------------------------------------------------------------------
     @Input
-    def pressure_ratio(self):
-        return 1.0
+    def inflow_conditions(self):
+        """Map inflow_conditions to compressor_inflow for parent contract."""
+        return self.compressor_inflow
 
     @Input
-    def isos_efficiency(self):
+    def rpm(self):
+        """Map rpm to shaft_rpm for parent contract / old script compatibility."""
+        return self.shaft_rpm
+
+    @Input
+    def pressure_ratio(self):
+        """Spool itself is purely structural, so pressure ratio is 1.0."""
         return 1.0
 
     @Input
     def Mach_out(self):
+        """Map Mach_out to inflow Mach to satisfy parent contract."""
         return self.inflow_conditions.Mach
 
     @Input
+    def station_out(self):
+        """Dummy station out to satisfy parent contract."""
+        return 4
+
+    @Input
     def length(self):
-        return self.shaft_length
+        """Length of the spool shaft [m]."""
+        return self.x_end - self.x_start
 
     @Input
     def radius(self):
-        return self.r_tip_c_in
+        """Reference radius for parent contract."""
+        return self.design_radius
 
     # ------------------------------------------------------------------
-    # Shaft length & axial stations (normalised x range is 0 .. 4.3)
+    # Derived Sizing & Radii from Low-Fidelity CFD
     # ------------------------------------------------------------------
     @Attribute
-    def shaft_length(self):
-        return self.r_tip_c_in * 4.3
+    def compressor_hub_in(self):
+        """Inlet hub radius of the compressor [m] derived from stage data."""
+        return self.compressor.stage_data[0]['rotor']['r_sections'][0]
 
     @Attribute
-    def compressor_x_start(self):
-        return self.shaft_length * 0.4 / 4.3   # x_norm = 0.4 (compressor inlet)
+    def compressor_hub_out(self):
+        """Outlet hub radius of the compressor [m] derived from stage data."""
+        return self.compressor.stage_data[-1]['stator']['r_sections'][0]
 
     @Attribute
-    def turbine_x_start(self):
-        return self.shaft_length * 3.1 / 4.3   # x_norm = 3.1 (turbine inlet)
-
-    # ------------------------------------------------------------------
-    # Normalised outer profile (x_norm, r_norm); r normalised to r_tip_c_in
-    # ------------------------------------------------------------------
-    @Attribute
-    def k0_outer_norm(self):
-        return [
-            (0.00, 0.000),
-            (0.10, 0.298),
-            (0.20, 0.390),
-            (0.30, 0.436),
-            (0.40, 0.450),   # compressor inlet
-            (0.65, 0.505),
-            (0.90, 0.565),
-            (1.15, 0.624),
-            (1.40, 0.680),
-            (1.65, 0.740),
-            (1.90, 0.850),   # compressor exit
-            (2.20, 0.834),   # S-curve inter-machine start
-            (2.50, 0.800),
-            (2.80, 0.766),
-            (3.10, 0.750),   # turbine inlet
-            (3.90, 0.650),   # turbine exit
-            (4.00, 0.629),   # tail ellipse
-            (4.10, 0.563),
-            (4.20, 0.430),
-            (4.30, 0.000),   # tail tip
-        ]
-
-    # ------------------------------------------------------------------
-    # Hollow-shaft profile derivation (spool_index > 0) — UNTESTED PATH
-    #
-    # TODO #1 (Architect): wire `inner_spool_profile_norm` from the adjacent
-    #   inner spool's outer profile (assembly-level link). Until then only
-    #   spool_index == 0 runs end-to-end.
-    # ------------------------------------------------------------------
-    @Attribute
-    def hollow_outer_r(self):
-        # gap(r) = max(delta_min, clearance_epsilon * r), applied INDEPENDENTLY
-        # at each x station of the inner spool's outer profile.
-        return [r + max(self.delta_min, self.clearance_epsilon * r)
-                for _, r in self.inner_spool_profile_norm]
+    def turbine_hub_in(self):
+        """Inlet hub radius of the turbine [m] derived from stage data."""
+        return self.turbine.stage_data[0]['stator']['r_sections'][0]
 
     @Attribute
-    def hollow_outer_profile_norm(self):
-        return [(x, r_new) for (x, _), r_new
-                in zip(self.inner_spool_profile_norm, self.hollow_outer_r)]
+    def turbine_hub_out(self):
+        """Outlet hub radius of the turbine [m] derived from stage data."""
+        return self.turbine.stage_data[-1]['rotor']['r_sections'][0]
 
     @Attribute
-    def outer_profile_norm(self):
-        return self.k0_outer_norm if self.spool_index == 0 \
-            else self.hollow_outer_profile_norm
+    def compressor_tip_radii(self):
+        """Compressor inlet and outlet tip radii [m] (r_tip_in, r_tip_out)."""
+        return (
+            self.compressor.stage_data[0]['rotor']['r_sections'][-1],
+            self.compressor.stage_data[-1]['stator']['r_sections'][-1]
+        )
+
+    @Attribute
+    def turbine_tip_radii(self):
+        """Turbine inlet and outlet tip radii [m] (r_tip_in, r_tip_out)."""
+        return (
+            self.turbine.stage_data[0]['stator']['r_sections'][-1],
+            self.turbine.stage_data[-1]['rotor']['r_sections'][-1]
+        )
+
+    @Attribute
+    def compressor_axial_length(self):
+        """Total axial length of the compressor [m]."""
+        return sum(self.compressor.stage_axial_lengths)
+
+    @Attribute
+    def turbine_axial_length(self):
+        """Total axial length of the turbine [m]."""
+        return sum(self.turbine.stage_axial_lengths)
 
     # ------------------------------------------------------------------
-    # De-normalised wall points (Point objects in the X_axial/Y_radial plane).
-    # x_norm in [0, 4.3] maps to [0, shaft_length]; r_norm scaled by r_tip_c_in
-    # (same scale on both axes, so the meridian aspect ratio is preserved and
-    # x_norm = 4.3 lands exactly at shaft_length).
+    # Dynamic Axial Stations
     # ------------------------------------------------------------------
     @Attribute
-    def outer_profile_points(self):
-        return [Point(x / 4.3 * self.shaft_length, r * self.r_tip_c_in, 0.0)
-                for x, r in self.outer_profile_norm]
+    def compressor_end_x(self):
+        """Compressor exit axial position [m]."""
+        return self.x_start_compressor + self.compressor_axial_length
 
     @Attribute
-    def tau_allow(self):
-        # TODO #2 (Architect): `allowable_shear_stress` is NOT present in the
-        #   current Material / MATERIAL_DB. Either add it to the DB, or derive
-        #   it here from yield_stress (von Mises: tau = yield_stress / sqrt(3)).
-        return self.material.allowable_shear_stress
+    def turbine_start_x(self):
+        """Turbine inlet axial position [m]."""
+        return self.compressor_end_x + self.gap_length
 
     @Attribute
-    def shaft_thickness(self):
-        # Torsion-sized wall thickness per outer point, floored at delta_min.
-        # Empty for the solid HP shaft, so the solid path never touches tau_allow.
-        # TODO #3: the term under **0.25 can go negative for large torque / small
-        #   r_out (complex result). Clamp once the Architect fixes the sizing law.
-        return [] if self.spool_index == 0 else [
-            max(self.delta_min,
-                r_out - (r_out ** 4
-                         - (2.0 * self.design_torque * r_out)
-                         / (math.pi * self.tau_allow)) ** 0.25)
-            for r_out in self.hollow_outer_r
-        ]
+    def turbine_end_x(self):
+        """Turbine exit axial position [m]."""
+        return self.turbine_start_x + self.turbine_axial_length
+
+    # ------------------------------------------------------------------
+    # Shaft Profile Curve Points
+    # ------------------------------------------------------------------
+    @Attribute
+    def nose_cap_points(self):
+        """Points defining the ellipsoidal nose cap curve."""
+        x1 = self.x_start
+        x2 = self.x_start_compressor
+        r_hub = self.compressor_hub_in
+        dx = x2 - x1
+        if dx <= 0:
+            raise ValueError(f"x_start_compressor ({x2}) must be greater than x_start ({x1})")
+        pts = []
+        for i in range(5):
+            t = i / 4.0
+            x_val = x1 + t * dx
+            r_val = r_hub * math.sqrt(1.0 - (1.0 - t) ** 2)
+            pts.append(Point(x_val, r_val, 0.0))
+        return pts
 
     @Attribute
-    def inner_profile_points(self):
-        # Inner wall = outer wall pulled inward radially by the local thickness.
-        return [Point(p.x, p.y - t, 0.0)
-                for p, t in zip(self.outer_profile_points, self.shaft_thickness)]
+    def gap_transition_points(self):
+        """Points defining the smoothstep S-curve gap transition."""
+        x1 = self.compressor_end_x
+        x2 = self.turbine_start_x
+        r1 = self.compressor_hub_out
+        r2 = self.turbine_hub_in
+        dx = x2 - x1
+        if dx <= 0:
+            raise ValueError(f"turbine_start_x ({x2}) must be greater than compressor_end_x ({x1})")
+        pts = []
+        for i in range(6):
+            t = i / 5.0
+            x_val = x1 + t * dx
+            factor = 3.0 * (t ** 2) - 2.0 * (t ** 3)
+            r_val = r1 + (r2 - r1) * factor
+            pts.append(Point(x_val, r_val, 0.0))
+        return pts
+
+    @Attribute
+    def tail_cap_points(self):
+        """Points defining the ellipsoidal tail cap curve."""
+        x1 = self.turbine_end_x
+        x2 = self.x_end
+        r_hub = self.turbine_hub_out
+        dx = x2 - x1
+        if dx <= 0:
+            raise ValueError(f"x_end ({x2}) must be greater than turbine_end_x ({x1})")
+        pts = []
+        for i in range(5):
+            t = i / 4.0
+            x_val = x1 + t * dx
+            r_val = r_hub * math.sqrt(1.0 - t ** 2)
+            pts.append(Point(x_val, r_val, 0.0))
+        return pts
+
+    # ------------------------------------------------------------------
+    # Shaft Geometry Parts
+    # ------------------------------------------------------------------
+    @Part
+    def nose_cap_curve(self):
+        """Ellipsoidal nose cap curve."""
+        return FittedCurve(points=self.nose_cap_points, hidden=True)
+
+    @Part
+    def compressor_body_segment(self):
+        """Linear taper compressor body segment."""
+        return LineSegment(
+            start=Point(self.x_start_compressor, self.compressor_hub_in, 0.0),
+            end=Point(self.compressor_end_x, self.compressor_hub_out, 0.0),
+            hidden=True
+        )
+
+    @Part
+    def gap_transition_curve(self):
+        """Smooth transition curve between compressor and turbine."""
+        return FittedCurve(points=self.gap_transition_points, hidden=True)
+
+    @Part
+    def turbine_body_segment(self):
+        """Linear taper turbine body segment."""
+        return LineSegment(
+            start=Point(self.turbine_start_x, self.turbine_hub_in, 0.0),
+            end=Point(self.turbine_end_x, self.turbine_hub_out, 0.0),
+            hidden=True
+        )
+
+    @Part
+    def tail_cap_curve(self):
+        """Ellipsoidal tail cap curve."""
+        return FittedCurve(points=self.tail_cap_points, hidden=True)
+
+    @Part
+    def axis_closure_segment(self):
+        """Closure along the rotational axis (r = 0) from tail tip to nose tip."""
+        return LineSegment(
+            start=Point(self.x_end, 0.0, 0.0),
+            end=Point(self.x_start, 0.0, 0.0),
+            hidden=True
+        )
 
     @Attribute
     def shaft_profile_curves(self):
-        # Solid HP : outer profile -> axial closure (r = 0).
-        # Hollow   : outer -> tail cap -> inner (reversed) -> nose cap.
-        return [self.outer_curve, self.closing_segment] if self.spool_index == 0 \
-            else [self.outer_curve, self.tail_cap, self.inner_curve, self.nose_cap]
-
-    # ------------------------------------------------------------------
-    # Shaft geometry parts
-    # ------------------------------------------------------------------
-    @Part
-    def outer_curve(self):
-        return FittedCurve(points=self.outer_profile_points, hidden=True)
-
-    @Part
-    def closing_segment(self):
-        # Solid shaft: close along the axis from tail tip back to nose tip.
-        return LineSegment(start=self.outer_profile_points[-1],
-                           end=self.outer_profile_points[0],
-                           hidden=True)
-
-    @Part
-    def inner_curve(self):
-        # Hollow shafts only — inner wall traversed aft -> forward.
-        return FittedCurve(points=list(reversed(self.inner_profile_points)),
-                           hidden=True)
-
-    @Part
-    def tail_cap(self):
-        # Hollow shafts only — radial closure outer-aft -> inner-aft.
-        return LineSegment(start=self.outer_profile_points[-1],
-                           end=self.inner_profile_points[-1],
-                           hidden=True)
-
-    @Part
-    def nose_cap(self):
-        # Hollow shafts only — radial closure inner-fwd -> outer-fwd.
-        return LineSegment(start=self.inner_profile_points[0],
-                           end=self.outer_profile_points[0],
-                           hidden=True)
+        """List of curves making up the shaft meridian profile."""
+        return [
+            self.nose_cap_curve,
+            self.compressor_body_segment,
+            self.gap_transition_curve,
+            self.turbine_body_segment,
+            self.tail_cap_curve,
+            self.axis_closure_segment
+        ]
 
     @Part
     def shaft_profile(self):
+        """The composed meridian profile wire."""
         return ComposedCurve(built_from=self.shaft_profile_curves, hidden=True)
 
     @Part
     def body(self):
-        # Named `body` so EngineComponent.volume / weight resolve automatically.
-        return RevolvedSolid(built_from=self.shaft_profile,
-                             center=Point(0.0, 0.0, 0.0),
-                             direction=(1.0, 0.0, 0.0),
-                             angle=2.0 * math.pi,
-                             color=self.material.color)
+        """The revolved 3D solid shaft revolved about the X-axis."""
+        return RevolvedSolid(
+            built_from=self.shaft_profile,
+            center=Point(0.0, 0.0, 0.0),
+            direction=(1.0, 0.0, 0.0),
+            angle=2.0 * math.pi,
+            color=self.material.color
+        )
 
     # ------------------------------------------------------------------
-    # Turbomachine children
+    # Turbomachine Children
     # ------------------------------------------------------------------
     @Attribute
     def compressor_pressure_ratio(self):
-        # Rule of thumb until the cycle analysis feeds a real PR.
-        return (self.r_tip_c_in / self.r_hub_c_in) ** 2
+        """Derive compressor pressure ratio from compressor_delta_h and inlet conditions."""
+        inflow = self.compressor_inflow
+        eta = self.isos_efficiency
+        temp = 1.0 + (eta * self.compressor_delta_h) / (inflow.cp * inflow.T_total)
+        return temp ** (inflow.gamma / (inflow.gamma - 1.0))
+
+    @Attribute
+    def turbine_pressure_ratio(self):
+        """Derive turbine pressure ratio from turbine_delta_h and inlet conditions."""
+        inflow = self.turbine_inflow
+        eta = self.isos_efficiency
+        temp = 1.0 - self.turbine_delta_h / (eta * inflow.cp * inflow.T_total)
+        if temp <= 0:
+            raise ValueError(f"Turbine delta_h is too large, resulting in non-physical negative temperatures: temp = {temp}")
+        return temp ** (inflow.gamma / (inflow.gamma - 1.0))
 
     @Input
     def work_dir_base(self):
-        # Separate work_dir per machine type avoids the stale @Attribute cache /
-        # profile-swap bug seen when compressor and turbine share one folder.
+        """Base directory for this spool's Multall solver runs."""
         return os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "Multall", "spool_{}".format(self.spool_index))
+                            "Multall", f"spool_{self.spool_index}")
 
     @Part
     def compressor(self):
-        # TODO #4: axial placement via the local frame's 'x'. If Stage builds its
-        #   blades from ABSOLUTE coords (known issue), this translate will not
-        #   move them — an explicit axial_offset input on Turbomachine/Stage is
-        #   then required. Verify the rendering in the GUI.
+        """The compressor turbomachine child.
+        Marked hidden=True to defer blade lofting CAD generation until requested.
+        """
         return Compressor(
-            inflow_conditions=self.inflow_conditions,
+            inflow_conditions=self.compressor_inflow,
             pressure_ratio=self.compressor_pressure_ratio,
-            n_stages=self.n_stages_compressor,
-            rpm=self.rpm,
-            design_radius=(self.r_hub_c_in + self.r_tip_c_in) / 2.0,
+            n_stages=self.compressor_n_stages,
+            rpm=self.shaft_rpm,
+            design_radius=self.design_radius,
+            reaction=self.compressor_reaction_coeff,
             material_name=self.material_name,
             work_dir=os.path.join(self.work_dir_base, "compressor"),
-            position=translate(self.position, 'x', self.compressor_x_start),
-            label="C{}".format(self.spool_index),
+            axial_offset=self.x_start_compressor,
+            label=f"C_{self.label}" if hasattr(self, 'label') else "C",
         )
 
     @Part
     def turbine(self):
-        # Turbine inlet state comes from the combustor exit (turbine_inflow_conditions),
-        # NOT from the compressor. Expansion -> PR < 1.
+        """The turbine turbomachine child.
+        Marked hidden=True to defer blade lofting CAD generation until requested.
+        """
         return Turbine(
-            inflow_conditions=self.turbine_inflow_conditions,
-            pressure_ratio=1.0 / self.compressor.pressure_ratio,
-            n_stages=self.n_stages_turbine,
-            rpm=self.rpm,
-            design_radius=(self.r_hub_t_in + self.r_tip_t_in) / 2.0,
+            inflow_conditions=self.turbine_inflow,
+            pressure_ratio=self.turbine_pressure_ratio,
+            n_stages=self.turbine_n_stages,
+            rpm=self.shaft_rpm,
+            design_radius=self.design_radius,
+            reaction=self.turbine_reaction_coeff,
             material_name=self.material_name,
             work_dir=os.path.join(self.work_dir_base, "turbine"),
-            position=translate(self.position, 'x', self.turbine_x_start),
-            label="T{}".format(self.spool_index),
+            axial_offset=self.turbine_start_x,
+            label=f"T_{self.label}" if hasattr(self, 'label') else "T",
         )
 
     # ------------------------------------------------------------------
-    # Power balance
+    # Power and Sequential Power Balance
     # ------------------------------------------------------------------
     @Attribute
     def power_required(self):
-        # TODO #5: stub — replace with self.compressor.power_required [W] once
-        #   Turbomachine exposes it.
-        return 0.0
+        """Power required by the compressor [W].
+        If Multall CFD has run, it parses the shaft power from the CFD results.
+        Otherwise, it falls back to the thermodynamic design power.
+        """
+        self._cfd_runs_counter  # Register dependency for invalidation
+        work_dir = self.compressor.work_dir
+        if os.path.exists(os.path.join(work_dir, "global.plt")):
+            try:
+                return parse_shaft_power(
+                    work_dir=work_dir,
+                    rpm=self.shaft_rpm,
+                    gamma=self.compressor_inflow.gamma,
+                    R=self.compressor.effective_gas_constant,
+                    mass_flow=self.compressor_inflow.mass_flow,
+                    machine_type='compressor'
+                )
+            except Exception as e:
+                print(f"Warning: failed to parse compressor shaft power: {e}")
+
+        # Fallback to thermodynamic design power
+        return self.compressor_inflow.mass_flow * self.compressor_delta_h
 
     @Attribute
     def power_estimated(self):
-        # TODO #5: stub — replace with self.turbine.power_estimated [W] once
-        #   Turbomachine exposes it.
-        return 0.0
+        """Power supplied/estimated by the turbine [W].
+        If Multall CFD has run for the turbine, it parses the shaft power.
+        Otherwise, it falls back to the thermodynamic design power.
+        """
+        self._cfd_runs_counter  # Register dependency for invalidation
+        work_dir = self.turbine.work_dir
+        if os.path.exists(os.path.join(work_dir, "global.plt")):
+            try:
+                return parse_shaft_power(
+                    work_dir=work_dir,
+                    rpm=self.shaft_rpm,
+                    gamma=self.turbine_inflow.gamma,
+                    R=self.turbine.effective_gas_constant,
+                    mass_flow=self.turbine_inflow.mass_flow,
+                    machine_type='turbine'
+                )
+            except Exception as e:
+                print(f"Warning: failed to parse turbine shaft power: {e}")
+
+        # Fallback to thermodynamic design power
+        return self.turbine_inflow.mass_flow * self.turbine_delta_h
 
     @action(label='Run power balance')
     def power_balance(self):
         """Sequential balance: size the compressor work, then verify the turbine
         can supply it (with loss_margin) before running its high-fidelity CFD."""
+        # 1. Run Compressor CFD
+        print("[Power Balance] Running Compressor CFD...")
         self.compressor.multall_analysis()
-        # Reads the Spool-level stubs for now (see TODO #5); the target form is
-        # required = self.compressor.power_required * (1 + self.loss_margin).
+
+        # Invalidate power_required and power_estimated cache
+        self._cfd_runs_counter += 1
+
+        # 2. Check power required vs estimated
         required = self.power_required * (1.0 + self.loss_margin)
-        if self.power_estimated >= required:
+        estimated = self.power_estimated
+        print(f"[Power Balance] Required: {required:.0f} W (with margin), Turbine Estimated: {estimated:.0f} W")
+
+        if estimated >= required:
+            # 3. Run Turbine CFD
+            print("[Power Balance] Power check passed. Running Turbine CFD...")
             self.turbine.multall_analysis()
+            
+            # Invalidate power_estimated cache with the final results
+            self._cfd_runs_counter += 1
+            print("[Power Balance] Power balance complete.")
         else:
             raise ValueError(
-                f"Power deficit: turbine estimated {self.power_estimated:.0f} W, "
+                f"Power deficit: turbine estimated {estimated:.0f} W, "
                 f"required {required:.0f} W, "
-                f"deficit {required - self.power_estimated:.0f} W"
+                f"deficit {required - estimated:.0f} W"
             )
-        # TODO #6: PARALLEL CFD — implement after sequential validation.
-        # TODO #7: GEOMETRY UPDATE — needs Architect spec before implementation.
 
 
 # ---------------------------------------------------------------------------
@@ -363,38 +455,43 @@ if __name__ == '__main__':
         Mach=0.45,
     )
 
+    # TIT = 1500 K
     turbine_inlet = FlowStation(
         station_number=4,
         fluid_type='air',
-        p_total=1300000.0,   # combustor exit (HPC exit minus combustor loss) [Pa]
+        p_total=1300000.0,   # combustor exit [Pa]
         T_total=1500.0,      # turbine entry temperature [K]
         mass_flow=25.5,      # core flow + fuel [kg/s]
         Mach=0.30,
     )
 
     hp_spool = Spool(
-        spool_index=0,
-        inflow_conditions=compressor_inlet,
-        turbine_inflow_conditions=turbine_inlet,
-        r_tip_c_in=0.35,
-        r_hub_c_in=0.15,
-        r_hub_c_out=0.28,
-        r_tip_c_out=0.34,
-        r_hub_t_in=0.22,
-        r_hub_t_out=0.18,
-        r_tip_t_in=0.32,
-        r_tip_t_out=0.38,
-        rpm=15000.0,
-        design_torque=50000.0,
-        n_stages_compressor=5,
-        n_stages_turbine=2,
+        design_radius=0.20,
+        compressor_delta_h=150000.0,   # [J/kg]
+        turbine_delta_h=160000.0,      # [J/kg]
+        compressor_n_stages=5,
+        turbine_n_stages=2,
+        shaft_rpm=12000.0,
+        compressor_inflow=compressor_inlet,
+        turbine_inflow=turbine_inlet,
+        gap_length=0.25,
+        x_start=0.0,
+        x_start_compressor=0.4,
+        x_end=1.0,
+        isos_efficiency=0.90,
         label='HP_spool',
     )
 
-    print(f"shaft_length        [m] = {hp_spool.shaft_length:.4f}")
-    print(f"compressor_x_start  [m] = {hp_spool.compressor_x_start:.4f}")
-    print(f"turbine_x_start     [m] = {hp_spool.turbine_x_start:.4f}")
-    print(f"compressor PR       [-] = {hp_spool.compressor_pressure_ratio:.3f}")
-    print(f"shaft volume       [m3] = {hp_spool.body.volume:.6f}")
+    print("=== SPOOL INITIALIZATION SUCCESS ===")
+    print(f"compressor_hub_in    [m] = {hp_spool.compressor_hub_in:.4f}")
+    print(f"compressor_hub_out   [m] = {hp_spool.compressor_hub_out:.4f}")
+    print(f"turbine_hub_in       [m] = {hp_spool.turbine_hub_in:.4f}")
+    print(f"turbine_hub_out      [m] = {hp_spool.turbine_hub_out:.4f}")
+    print(f"compressor_axial_len [m] = {hp_spool.compressor_axial_length:.4f}")
+    print(f"turbine_axial_len    [m] = {hp_spool.turbine_axial_length:.4f}")
+    print(f"shaft_length         [m] = {hp_spool.length:.4f}")
+    print(f"shaft volume        [m3] = {hp_spool.body.volume:.6f}")
+    print(f"power required       [W] = {hp_spool.power_required:.2f}")
+    print(f"power estimated      [W] = {hp_spool.power_estimated:.2f}")
 
-    display(hp_spool)
+    display(hp_spool, autodraw=True)

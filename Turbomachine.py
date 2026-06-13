@@ -158,11 +158,11 @@ class Turbomachine(EngineComponent, GeomBase):
     """Blade aspect ratio (span / chord). Used when blade_axial_chords is None
     to estimate axial chords from design_radius. Typical: 2-4 compressor, 2-3 turbine."""
 
-    inlet_rotor_max_AR = Input(3.5)
+    inlet_rotor_max_AR = Input(10)
     """Max span/chord aspect ratio for the FIRST-stage rotor's CAD blade.
     Deprecated: use max_aspect_ratio_cap instead."""
 
-    enable_cad_chord_capping = Input(True)
+    enable_cad_chord_capping = Input(False)
     """If True, scales up the CAD chords of rows that are too slender or too thin
     so that the LoftedSolid is robust and does not degenerate at the tip."""
 
@@ -215,6 +215,13 @@ class Turbomachine(EngineComponent, GeomBase):
     # ------------------------------------------------------------------
 
     n_pts     = Input(60)      # blade profile resampling resolution
+
+    axial_offset = Input(0.0)
+    """X position [m] of this machine's first stage LE along the engine axis.
+    Set by the parent Spool to place the whole machine on the shaft. Added on
+    top of the per-stage cumulative stacking and fed to Stage.stage_axial_offset
+    (which drives Blade.axial_offset, since blades are built from absolute
+    coordinates and a position frame would not move them)."""
 
     # ------------------------------------------------------------------
     # Inputs — solver configuration (forwarded to MultallSolver)
@@ -375,7 +382,9 @@ class Turbomachine(EngineComponent, GeomBase):
     @Attribute
     def stage_data(self):
         """List of per-stage dicts used to build the Stage parts."""
-        return self._build_stage_data()
+        out_path = self.solver.stagen_out_path
+        dat_path = self.solver.stagen_dat_path
+        return self._build_stage_data_from(out_path, dat_path)
 
     def _build_stage_data(self):
         """Parse the low-fidelity output into per-stage geometry data.
@@ -388,15 +397,25 @@ class Turbomachine(EngineComponent, GeomBase):
         Accessing solver.stagen_out_path is what triggers meangen + stagen,
         so both stagen.dat and stagen.out exist before they are parsed.
         """
-        out_path = self.solver.stagen_out_path   # triggers the low-fidelity run
+        out_path = self.solver.stagen_out_path
         dat_path = self.solver.stagen_dat_path
+        return self._build_stage_data_from(out_path, dat_path)
+
+    def _build_stage_data_from(self, out_path, dat_path):
+        """Logica di parsing. Riceve i path già risolti da stage_data.
+        Non referenzia self.solver qui dentro — il caching è garantito
+        dall'@Attribute stage_data che ha già registrato le dipendenze.
+        """
         meagen_rows = MeagenParser.parse(dat_path)
         row_order = [r['row_type'] for r in meagen_rows]
-        stages = StageParser.parse(out_path, row_order=row_order, machine_type=self.machine_type)
+        _, n_sections = MeagenParser.parse_structure(dat_path)
+        stages = StageParser.parse(out_path, row_order=row_order,
+                                   n_sections=n_sections,
+                                   machine_type=self.machine_type)
         merged = MeagenParser.merge(stages, meagen_rows)
-        self._cap_blade_rows_aspect_ratio(merged)  # <-- updated
+        self._cap_blade_rows_aspect_ratio(merged)
         for i, st in enumerate(merged):
-            rc = sum(st['rotor']['chords'])  / len(st['rotor']['chords'])
+            rc = sum(st['rotor']['chords']) / len(st['rotor']['chords'])
             sc = sum(st['stator']['chords']) / len(st['stator']['chords'])
             print(f"[stage_data] stage {i}: rotor chord={rc:.4f}m, "
                   f"stator chord={sc:.4f}m, "
@@ -522,7 +541,7 @@ class Turbomachine(EngineComponent, GeomBase):
             # --- layout ---
             axial_gap             = self.axial_gap,
             n_pts                 = self.n_pts,
-            stage_axial_offset    = self.stage_axial_starts[child.index],
+            stage_axial_offset    = self.axial_offset + self.stage_axial_starts[child.index],
             rotor_color           = self.material.color,
         )
 
@@ -606,30 +625,29 @@ if __name__ == '__main__':
     inlet = FlowStation(
         station_number=2,
         fluid_type='air',
-        p_total=101325.0,
-        T_total=288.15,
+        p_total=400000.0,  # 4 bar
+        T_total=1400.0,  # 1400 K (post-combustore)
         mass_flow=20.0,
-        Mach=0.5,
+        Mach=0.3,
     )
 
-    work = Path(__file__).resolve().parent / 'Multall' / 'DesignExample' / 'test_run_c'
+    work = Path(__file__).resolve().parent / 'Multall' / 'DesignExample' / 'test_run_t'
 
-    compressor = Turbomachine(
+    turbine = Turbomachine(
         machine_type='turbine',
         inflow_conditions=inlet,
-        pressure_ratio=4.0,
-        isos_efficiency=0.90,
-        n_stages=3,
-        stage_gap = 1,
-        row_gap = 0.5,
-        rpm=1200.0,
-        design_radius=0.35,
+        design_radius=0.30,
         work_dir=str(work),
-        label='HPC',
+        label='HPT_smoke',
     )
 
-    print(f"machine        = {compressor.machine_type} ({compressor.turbo_typ_code})")
-    print(f"n_stages       = {compressor.n_stages}")
-    print(f"meangen_input  = {compressor.meangen_input}")
+    print(f"machine        = {turbine.machine_type} ({turbine.turbo_typ_code})")
+    print(f"n_stages       = {turbine.n_stages}")
+    print(f"U              = {turbine.U:.1f} m/s")
+    print(f"flow_coeff     = {turbine.flow_coeff:.4f}  (target 0.50)")
+    print(f"loading_coeff  = {turbine.loading_coeff:.4f}  (target 2.00)")
+    print(f"reaction       = {turbine.reaction:.3f}")
+    print(f"deviation      = {turbine.deviation_angles}")
+    print(f"axial_chords   = {turbine.effective_axial_chords}")
 
-    display(compressor, view='top', autodraw=True)
+    display(turbine, view='top', autodraw=True)

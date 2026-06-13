@@ -63,6 +63,8 @@ class Blade(GeomBase):
     into a flat plate. A value of 1e-6 m (1 µm) resolves sub-mm gaps
     faithfully."""
 
+    preview_deflection: float = Input(0.0005)  # +++  tessellation coarseness
+
     circumferential_angle = Input(0.0)
     """Circumferential angle [deg] of this blade around the engine axis (X).
     Set by Stage for each blade in the row.  Rotates (Y, Z) of each point
@@ -348,6 +350,7 @@ class Blade(GeomBase):
         """Blade solid — LoftedSolid through all closed station profiles."""
         return LoftedSolid(
             profiles=[self.section_profiles[i] for i in range(self.n_stations)],
+            mesh_deflection=self.preview_deflection,
             color=self.color,
         )
 

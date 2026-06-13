@@ -7,22 +7,21 @@ Each row contains n_blades blades distributed evenly around the annulus.
 The stator is placed downstream of the rotor with an axial gap.
 
 Coordinate system (engine frame):
-  X — axial / meridional      ← engine spin axis
+  X — axial / meridional      <- engine spin axis
   Y — radial
   Z — tangential / circumferential
 
-Circumferential blade placement:
-  Each blade[i] is rotated by  i * (360 / n_blades) degrees
-  around the X axis (engine spin axis).
-
-Axial placement:
-  Rotor row  at X = 0 (origin)
-  Stator row at X = rotor_axial_chord + axial_gap
+Instancing strategy (performance refactor):
+  Previously: quantify=N independent Blade lofts  -> ~70 lofts/stage.
+  Now:        1 master Blade loft (hidden) + N RotatedShape copies
+              -> exactly 2 LoftedSolid evaluations per stage.
 """
 
 import math
-from parapy.core import Base, Input, Attribute, Part, child
-from parapy.geom import GeomBase
+
+from parapy.core import Input, Attribute, Part
+from parapy.geom import GeomBase, RotatedShape, Vector, Point
+from parapy.core import child
 
 from Blade import Blade
 
@@ -76,13 +75,13 @@ class Stage(GeomBase):
 
     stage_axial_offset = Input(0.0)
     """X offset [m] of this whole stage's leading edge along the engine axis.
-    Set by the parent Turbomachine to stack consecutive stages. It is added to
-    BOTH rotor_axial_offset and stator_axial_offset, because Blade builds its
-    geometry from absolute coordinates (via Blade.axial_offset): a parent
-    position frame would NOT translate the blades, but this offset does."""
+    Set by the parent Turbomachine to stack consecutive stages."""
 
     n_pts = Input(60)
     """Resampling resolution passed to Blade."""
+
+    preview_deflection = Input(0.0005)
+    """Forwarded as mesh_deflection to LoftedSolid. Lower = finer tessellation."""
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -91,18 +90,12 @@ class Stage(GeomBase):
     def _closed_profiles(self, suc_list, prs_list):
         """Merge suction+pressure lists into closed profile loops.
 
-        STAGEN writes both surfaces 'FROM LE TO TE', meaning x increases
-        from LE (x≈0) to TE (x≈1) in both blocks.  The closed loop is:
-            suction  LE->TE  +  pressure reversed (TE->LE)
-        with the shared LE and TE endpoints deduplicated.
-
-        Guard: reverse both surfaces if the first point has higher x than
-        the last (shouldn't happen with current STAGEN output, but keeps
-        the code robust against format variations).
+        STAGEN writes both surfaces FROM LE TO TE (x increases 0->1).
+        Closed loop: suction LE->TE + pressure reversed (TE->LE),
+        with shared LE and TE endpoints deduplicated.
         """
         result = []
         for suc, prs in zip(suc_list, prs_list):
-            # Reverse if written TE->LE (first x > last x in flow direction).
             if suc and suc[0][0] > suc[-1][0]:
                 suc = list(reversed(suc))
                 prs = list(reversed(prs))
@@ -111,7 +104,7 @@ class Stage(GeomBase):
         return result
 
     # ------------------------------------------------------------------
-    # Derived scalars
+    # Derived geometry attributes
     # ------------------------------------------------------------------
 
     @Attribute
@@ -157,6 +150,16 @@ class Stage(GeomBase):
         return 360.0 / self.stator_n_blades
 
     @Attribute
+    def rotor_angle_step_rad(self):
+        """Angular spacing between rotor blades [rad] — used by RotatedShape."""
+        return 2.0 * math.pi / self.rotor_n_blades
+
+    @Attribute
+    def stator_angle_step_rad(self):
+        """Angular spacing between stator blades [rad]."""
+        return 2.0 * math.pi / self.stator_n_blades
+
+    @Attribute
     def rotor_mean_axial_chord(self):
         """Mean axial chord of the rotor [m]."""
         return sum(self.rotor_chords) / len(self.rotor_chords)
@@ -169,42 +172,33 @@ class Stage(GeomBase):
     @Attribute
     def upstream_axial_chord(self):
         """Axial chord of the upstream blade row [m].
-
-        Compressor: rotor is upstream.
-        Turbine:    stator is upstream.
-        """
+        Compressor: rotor upstream. Turbine: stator upstream."""
         return {'compressor': self.rotor_mean_axial_chord,
                 'turbine':    self.stator_mean_axial_chord}[self.stage_type]
 
     @Attribute
     def rotor_axial_offset(self):
-        """Absolute X offset of the rotor LE [m], including stage position.
-
-        Compressor: rotor is first (row-local offset = 0).
-        Turbine:    rotor is second (row-local offset = stator chord + gap).
-        stage_axial_offset stacks this stage behind previous ones.
-        """
-        row_local = {'compressor': 0.0,
-                     'turbine':    self.stator_mean_axial_chord + self.axial_gap
-                     }[self.stage_type]
-        return self.stage_axial_offset + row_local
+        """Absolute X offset of the rotor LE [m].
+        Compressor: rotor is first (row-local = 0).
+        Turbine:    rotor is second (row-local = stator chord + gap)."""
+        return self.stage_axial_offset + {
+            'compressor': 0.0,
+            'turbine':    self.stator_mean_axial_chord + self.axial_gap,
+        }[self.stage_type]
 
     @Attribute
     def stator_axial_offset(self):
-        """Absolute X offset of the stator LE [m], including stage position.
-
-        Compressor: stator is second (row-local offset = rotor chord + gap).
-        Turbine:    stator is first (row-local offset = 0).
-        stage_axial_offset stacks this stage behind previous ones.
-        """
-        row_local = {'compressor': self.rotor_mean_axial_chord + self.axial_gap,
-                     'turbine':    0.0
-                     }[self.stage_type]
-        return self.stage_axial_offset + row_local
+        """Absolute X offset of the stator LE [m].
+        Compressor: stator is second (row-local = rotor chord + gap).
+        Turbine:    stator is first (row-local = 0)."""
+        return self.stage_axial_offset + {
+            'compressor': self.rotor_mean_axial_chord + self.axial_gap,
+            'turbine':    0.0,
+        }[self.stage_type]
 
     @Attribute
     def rotor_solidity(self):
-        """Mean rotor solidity (n * chord) / (2π * r_mean)."""
+        """Mean rotor solidity: (n * chord) / (2π * r_mean)."""
         r_mean = 0.5 * (self.rotor_r_sections[0] + self.rotor_r_sections[-1])
         c_mean = sum(self.rotor_chords) / len(self.rotor_chords)
         return (self.rotor_n_blades * c_mean) / (2.0 * math.pi * r_mean)
@@ -217,45 +211,86 @@ class Stage(GeomBase):
         return (self.stator_n_blades * c_mean) / (2.0 * math.pi * r_mean)
 
     # ------------------------------------------------------------------
-    # Parts
+    # Volume aggregation (rigid rotation is volume-preserving)
+    # ------------------------------------------------------------------
+
+    @Attribute
+    def rotor_blade_volume(self):
+        """Total rotor row volume [m³] = master volume × blade count."""
+        return self.rotor_master.body.volume * self.rotor_n_blades
+
+    @Attribute
+    def stator_blade_volume(self):
+        """Total stator row volume [m³]."""
+        return self.stator_master.body.volume * self.stator_n_blades
+
+    # ------------------------------------------------------------------
+    # Master blades — ONE LoftedSolid per row, hidden
+    # ------------------------------------------------------------------
+
+    @Part
+    def rotor_master(self):
+        """Master rotor blade at circumferential_angle=0. Hidden.
+        Source OCC solid for all rotor_blades RotatedShape copies."""
+        return Blade(
+            profiles              = self.rotor_profiles_closed,
+            span_fractions        = self.rotor_span_fractions,
+            chords                = self.rotor_chords,
+            pitch_angles          = self.rotor_pitch_angles,
+            total_span            = self.rotor_span,
+            r_hub                 = self.rotor_r_hub,
+            n_pts                 = self.n_pts,
+            preview_deflection    = self.preview_deflection,
+            circumferential_angle = 0.0,
+            axial_offset          = self.rotor_axial_offset,
+            color                 = self.rotor_color,
+            hidden                = True,
+        )
+
+    @Part
+    def stator_master(self):
+        """Master stator blade at circumferential_angle=0. Hidden."""
+        return Blade(
+            profiles              = self.stator_profiles_closed,
+            span_fractions        = self.stator_span_fractions,
+            chords                = self.stator_chords,
+            pitch_angles          = self.stator_pitch_angles,
+            total_span            = self.stator_span,
+            r_hub                 = self.stator_r_hub,
+            n_pts                 = self.n_pts,
+            preview_deflection    = self.preview_deflection,
+            circumferential_angle = 0.0,
+            axial_offset          = self.stator_axial_offset,
+            color                 = self.stator_color,
+            hidden                = True,
+        )
+
+    # ------------------------------------------------------------------
+    # Full blade rows — pure OCC rigid transforms, no extra BREP work
     # ------------------------------------------------------------------
 
     @Part
     def rotor_blades(self):
-        """Full rotor blade row — n_blades equally spaced around annulus."""
-        return Blade(
-            quantify             = self.rotor_n_blades,
-            profiles             = self.rotor_profiles_closed,
-            span_fractions       = self.rotor_span_fractions,
-            chords               = self.rotor_chords,
-            pitch_angles         = [0.0] * len(self.rotor_profiles_suc),
-            total_span           = self.rotor_span,
-            r_hub                = self.rotor_r_hub,
-            n_pts                = self.n_pts,
-            circumferential_angle= child.index * self.rotor_angle_step_deg,
-            axial_offset         = self.rotor_axial_offset,
-            color                = self.rotor_color,
+        """Full rotor row: N RotatedShape copies of rotor_master.body."""
+        return RotatedShape(
+            shape_in       = self.rotor_master.body,
+            rotation_point = Point(0.0, 0.0, 0.0),
+            vector         = Vector(1.0, 0.0, 0.0),
+            angle          = child.index * self.rotor_angle_step_rad,
+            quantify       = self.rotor_n_blades,
+            color          = self.rotor_color,
         )
 
     @Part
     def stator_blades(self):
-        """Full stator blade row, n_blades equally spaced.
-
-        Compressor: stator is downstream of rotor.
-        Turbine:    stator is upstream of rotor.
-        """
-        return Blade(
-            quantify             = self.stator_n_blades,
-            profiles             = self.stator_profiles_closed,
-            span_fractions       = self.stator_span_fractions,
-            chords               = self.stator_chords,
-            pitch_angles         = [0.0] * len(self.stator_profiles_suc),
-            total_span           = self.stator_span,
-            r_hub                = self.stator_r_hub,
-            n_pts                = self.n_pts,
-            circumferential_angle= child.index * self.stator_angle_step_deg,
-            axial_offset         = self.stator_axial_offset,
-            color                = self.stator_color,
+        """Full stator row: N RotatedShape copies of stator_master.body."""
+        return RotatedShape(
+            shape_in       = self.stator_master.body,
+            rotation_point = Point(0.0, 0.0, 0.0),
+            vector         = Vector(1.0, 0.0, 0.0),
+            angle          = child.index * self.stator_angle_step_rad,
+            quantify       = self.stator_n_blades,
+            color          = self.stator_color,
         )
 
 
@@ -264,6 +299,7 @@ class Stage(GeomBase):
 # ---------------------------------------------------------------------------
 
 if __name__ == '__main__':
+    import time
     from parapy.gui import display
 
     def _profile(n=30):
@@ -273,6 +309,8 @@ if __name__ == '__main__':
 
     suc, prs = _profile()
 
+    t0 = time.perf_counter()
+
     stage = Stage(
         # rotor
         rotor_profiles_suc   = [suc, suc, suc],
@@ -281,7 +319,7 @@ if __name__ == '__main__':
         rotor_span_fractions = [0.0, 0.5, 1.0],
         rotor_chords         = [0.060, 0.055, 0.045],
         rotor_pitch_angles   = [-58.6, -60.4, -61.5],
-        rotor_n_blades       = 25,
+        rotor_n_blades       = 12,
         # stator
         stator_profiles_suc   = [suc, suc, suc],
         stator_profiles_prs   = [prs, prs, prs],
@@ -289,14 +327,30 @@ if __name__ == '__main__':
         stator_span_fractions = [0.0, 0.5, 1.0],
         stator_chords         = [0.060, 0.055, 0.045],
         stator_pitch_angles   = [58.6, 60.4, 61.5],
-        stator_n_blades       = 25,
+        stator_n_blades       = 16,
         # layout
+        stage_type         = 'compressor',
         axial_gap          = 0.001,
         stage_axial_offset = 0.0,
-        n_pts              = 40,
-        label              = 'stage_1',
-        stage_type         = 'compressor',
+        n_pts              = 30,
+        preview_deflection = 0.001,
+        label              = 'smoke_stage',
     )
+
+    t1 = time.perf_counter()
+    print(f"[BENCH] Stage instantiation:        {t1 - t0:.3f} s")
+
+    t2 = time.perf_counter()
+    vol = stage.rotor_master.body.volume
+    t3 = time.perf_counter()
+    print(f"[BENCH] Master rotor loft:          {t3 - t2:.3f} s")
+    print(f"        rotor master volume:         {vol:.4e} m^3")
+
+    t4 = time.perf_counter()
+    _ = stage.rotor_blades[0]
+    _ = stage.rotor_blades[-1]
+    t5 = time.perf_counter()
+    print(f"[BENCH] First + last RotatedShape:  {t5 - t4:.3f} s")
 
     print(f"rotor  blades   = {stage.rotor_n_blades}, "
           f"angle step = {stage.rotor_angle_step_deg:.2f} deg")
@@ -306,5 +360,6 @@ if __name__ == '__main__':
     print(f"stator X offset = {stage.stator_axial_offset*1000:.1f} mm")
     print(f"rotor  solidity = {stage.rotor_solidity:.3f}")
     print(f"stator solidity = {stage.stator_solidity:.3f}")
+    print(f"rotor  blade volume (total) = {stage.rotor_blade_volume:.4e} m^3")
 
     display(stage, view='top', autodraw=True)

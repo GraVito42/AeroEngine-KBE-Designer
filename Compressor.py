@@ -251,7 +251,7 @@ if __name__ == '__main__':
     hpc = Compressor(
         inflow_conditions=inlet,
         pressure_ratio=4,
-        frac_twist=0.0,
+        frac_twist=0.5,
         isos_efficiency=0.88,
         n_stages=5,
         rpm=12000.0,
