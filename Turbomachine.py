@@ -579,14 +579,12 @@ class Turbomachine(EngineComponent, GeomBase):
     def weight(self):
         """Total blade mass [kg] = sum of all blade volumes * density.
 
-        Blade exposes a `volume` @Attribute (LoftedSolid `body.volume`).
-        Disk/shaft mass is not included.
+        Uses stage-level aggregated volume attributes to avoid querying
+        individual transformed shapes.
         """
         return self.material.density * sum(
-            blade.volume
+            stage.rotor_blade_volume + stage.stator_blade_volume
             for stage in self.body
-            for row in (stage.rotor_blades, stage.stator_blades)
-            for blade in row
         )
 
     @Attribute

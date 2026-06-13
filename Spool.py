@@ -20,14 +20,14 @@ from parapy.core import Input, Attribute, Part, action
 from parapy.geom import (GeomBase, Point, FittedCurve, LineSegment,
                          ComposedCurve, RevolvedSolid)
 
-from EngineComponent import EngineComponent
+from Material import Material
 from Compressor import Compressor
 from Turbine import Turbine
 from Flow_station import FlowStation
 from MultallSolver import parse_shaft_power
 
 
-class Spool(EngineComponent, GeomBase):
+class Spool(GeomBase):
     """Compressor + Turbine on one shaft, with a sequential power balance."""
 
     # ------------------------------------------------------------------
@@ -35,7 +35,6 @@ class Spool(EngineComponent, GeomBase):
     # ------------------------------------------------------------------
     design_radius = Input()            # Meanline radius for meangen [m]
     compressor_delta_h = Input()       # Total specific enthalpy rise [J/kg]
-    turbine_delta_h = Input()          # Total specific enthalpy drop [J/kg]
     compressor_n_stages = Input()      # Number of compressor stages
     turbine_n_stages = Input()         # Number of turbine stages
     shaft_rpm = Input()                # Shaft rotational speed [rev/min]
@@ -52,51 +51,37 @@ class Spool(EngineComponent, GeomBase):
     x_end = Input()                    # Spool end X [m]
 
     isos_efficiency = Input(0.90)      # Isentropic efficiency
-    loss_margin = Input(0.15)          # Power-balance margin fraction
     spool_index = Input(0)             # 0 = HP (innermost), 1 = IP, 2 = LP
     _cfd_runs_counter = Input(0)       # Internal counter to invalidate CFD-based attributes
+
+    thrust_needed = Input(30000.0)      # Required engine thrust [N]
+    ext_systems_power = Input(50000.0)  # Power absorbed by auxiliary systems [W]
+    flight_velocity = Input(250.0)      # Flight velocity [m/s]
+    loss_margin = Input(0.1)            # Power loss margin percentage (must be positive)
+
+    @Input
+    def turbine_delta_h(self):
+        """Calculated turbine enthalpy drop [J/kg] based on required power components."""
+        if self.loss_margin < 0:
+            raise ValueError("loss_margin must be positive")
+        return ((self.thrust_power + self.compressor_power + self.ext_systems_power) / self.turbine_inflow.mass_flow) * (1.0 + self.loss_margin)
 
     @Input
     def material_name(self):
         return "Ti-6Al-4V"
 
     # ------------------------------------------------------------------
-    # EngineComponent contract mappings & aliases
+    # Material and Geometric Attributes
     # ------------------------------------------------------------------
-    @Input
-    def inflow_conditions(self):
-        """Map inflow_conditions to compressor_inflow for parent contract."""
-        return self.compressor_inflow
+    @Part
+    def material(self):
+        """Material representation for color/density lookup."""
+        return Material(material_name=self.material_name)
 
-    @Input
-    def rpm(self):
-        """Map rpm to shaft_rpm for parent contract / old script compatibility."""
-        return self.shaft_rpm
-
-    @Input
-    def pressure_ratio(self):
-        """Spool itself is purely structural, so pressure ratio is 1.0."""
-        return 1.0
-
-    @Input
-    def Mach_out(self):
-        """Map Mach_out to inflow Mach to satisfy parent contract."""
-        return self.inflow_conditions.Mach
-
-    @Input
-    def station_out(self):
-        """Dummy station out to satisfy parent contract."""
-        return 4
-
-    @Input
+    @Attribute
     def length(self):
         """Length of the spool shaft [m]."""
         return self.x_end - self.x_start
-
-    @Input
-    def radius(self):
-        """Reference radius for parent contract."""
-        return self.design_radius
 
     # ------------------------------------------------------------------
     # Derived Sizing & Radii from Low-Fidelity CFD
@@ -186,25 +171,6 @@ class Spool(EngineComponent, GeomBase):
         return pts
 
     @Attribute
-    def gap_transition_points(self):
-        """Points defining the smoothstep S-curve gap transition."""
-        x1 = self.compressor_end_x
-        x2 = self.turbine_start_x
-        r1 = self.compressor_hub_out
-        r2 = self.turbine_hub_in
-        dx = x2 - x1
-        if dx <= 0:
-            raise ValueError(f"turbine_start_x ({x2}) must be greater than compressor_end_x ({x1})")
-        pts = []
-        for i in range(6):
-            t = i / 5.0
-            x_val = x1 + t * dx
-            factor = 3.0 * (t ** 2) - 2.0 * (t ** 3)
-            r_val = r1 + (r2 - r1) * factor
-            pts.append(Point(x_val, r_val, 0.0))
-        return pts
-
-    @Attribute
     def tail_cap_points(self):
         """Points defining the ellipsoidal tail cap curve."""
         x1 = self.turbine_end_x
@@ -239,9 +205,13 @@ class Spool(EngineComponent, GeomBase):
         )
 
     @Part
-    def gap_transition_curve(self):
-        """Smooth transition curve between compressor and turbine."""
-        return FittedCurve(points=self.gap_transition_points, hidden=True)
+    def gap_transition_segment(self):
+        """Straight transition line between compressor exit and turbine inlet."""
+        return LineSegment(
+            start=Point(self.compressor_end_x, self.compressor_hub_out, 0.0),
+            end=Point(self.turbine_start_x, self.turbine_hub_in, 0.0),
+            hidden=True
+        )
 
     @Part
     def turbine_body_segment(self):
@@ -272,7 +242,7 @@ class Spool(EngineComponent, GeomBase):
         return [
             self.nose_cap_curve,
             self.compressor_body_segment,
-            self.gap_transition_curve,
+            self.gap_transition_segment,
             self.turbine_body_segment,
             self.tail_cap_curve,
             self.axis_closure_segment
@@ -337,6 +307,7 @@ class Spool(EngineComponent, GeomBase):
             work_dir=os.path.join(self.work_dir_base, "compressor"),
             axial_offset=self.x_start_compressor,
             label=f"C_{self.label}" if hasattr(self, 'label') else "C",
+            enable_cad_chord_capping=True,
         )
 
     @Part
@@ -355,13 +326,21 @@ class Spool(EngineComponent, GeomBase):
             work_dir=os.path.join(self.work_dir_base, "turbine"),
             axial_offset=self.turbine_start_x,
             label=f"T_{self.label}" if hasattr(self, 'label') else "T",
+            enable_cad_chord_capping=True,
         )
 
     # ------------------------------------------------------------------
     # Power and Sequential Power Balance
     # ------------------------------------------------------------------
     @Attribute
-    def power_required(self):
+    def thrust_power(self):
+        """Propulsive power required to generate thrust [W]. Only driven by LP spool (index 2)."""
+        if self.spool_index == 2:
+            return self.thrust_needed * self.flight_velocity
+        return 0.0
+
+    @Attribute
+    def compressor_power(self):
         """Power required by the compressor [W].
         If Multall CFD has run, it parses the shaft power from the CFD results.
         Otherwise, it falls back to the thermodynamic design power.
@@ -411,20 +390,25 @@ class Spool(EngineComponent, GeomBase):
     @action(label='Run power balance')
     def power_balance(self):
         """Sequential balance: size the compressor work, then verify the turbine
-        can supply it (with loss_margin) before running its high-fidelity CFD."""
+        can supply it before running its high-fidelity CFD."""
         # 1. Run Compressor CFD
         print("[Power Balance] Running Compressor CFD...")
         self.compressor.multall_analysis()
 
-        # Invalidate power_required and power_estimated cache
+        # Invalidate compressor_power and power_estimated cache
         self._cfd_runs_counter += 1
 
-        # 2. Check power required vs estimated
-        required = self.power_required * (1.0 + self.loss_margin)
-        estimated = self.power_estimated
-        print(f"[Power Balance] Required: {required:.0f} W (with margin), Turbine Estimated: {estimated:.0f} W")
+        # 2. Check the power balance
+        turbine_power_gen = self.turbine_delta_h * self.turbine_inflow.mass_flow
+        remaining_power = turbine_power_gen - self.compressor_power
+        required_power = self.thrust_power + self.ext_systems_power
+        
+        print(f"[Power Balance] Turbine Power Gen: {turbine_power_gen:.0f} W")
+        print(f"[Power Balance] Compressor CFD Power: {self.compressor_power:.0f} W")
+        print(f"[Power Balance] Remaining Power: {remaining_power:.0f} W")
+        print(f"[Power Balance] Required Power (Thrust + Ext): {required_power:.0f} W")
 
-        if estimated >= required:
+        if remaining_power >= required_power:
             # 3. Run Turbine CFD
             print("[Power Balance] Power check passed. Running Turbine CFD...")
             self.turbine.multall_analysis()
@@ -433,11 +417,8 @@ class Spool(EngineComponent, GeomBase):
             self._cfd_runs_counter += 1
             print("[Power Balance] Power balance complete.")
         else:
-            raise ValueError(
-                f"Power deficit: turbine estimated {estimated:.0f} W, "
-                f"required {required:.0f} W, "
-                f"deficit {required - estimated:.0f} W"
-            )
+            print("UPDATE GEOMETRY")
+            raise ValueError("UPDATE GEOMETRY")
 
 
 # ---------------------------------------------------------------------------
@@ -468,16 +449,15 @@ if __name__ == '__main__':
     hp_spool = Spool(
         design_radius=0.20,
         compressor_delta_h=150000.0,   # [J/kg]
-        turbine_delta_h=160000.0,      # [J/kg]
         compressor_n_stages=5,
-        turbine_n_stages=2,
+        turbine_n_stages=3,
         shaft_rpm=12000.0,
         compressor_inflow=compressor_inlet,
         turbine_inflow=turbine_inlet,
         gap_length=0.25,
         x_start=0.0,
         x_start_compressor=0.4,
-        x_end=1.0,
+        x_end=1.5,
         isos_efficiency=0.90,
         label='HP_spool',
     )
@@ -491,7 +471,8 @@ if __name__ == '__main__':
     print(f"turbine_axial_len    [m] = {hp_spool.turbine_axial_length:.4f}")
     print(f"shaft_length         [m] = {hp_spool.length:.4f}")
     print(f"shaft volume        [m3] = {hp_spool.body.volume:.6f}")
-    print(f"power required       [W] = {hp_spool.power_required:.2f}")
+    print(f"compressor power     [W] = {hp_spool.compressor_power:.2f}")
     print(f"power estimated      [W] = {hp_spool.power_estimated:.2f}")
+    print(f"calculated delta_h[J/kg] = {hp_spool.turbine_delta_h:.2f}")
 
     display(hp_spool, autodraw=True)

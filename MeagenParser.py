@@ -115,6 +115,14 @@ class MeagenParser:
             )
 
         for row, mrow in zip(flat, meagen_rows):
+            # Overwrite the radii from stagen.dat to correct stagen.out's collapsed mid-span radial coordinates
+            row['r_sections'] = mrow['r_sections']
+            
+            # Recalculate span fractions using the correct radii to avoid zero-span collapse
+            r_hub, r_tip = row['r_sections'][0], row['r_sections'][-1]
+            span = (r_tip - r_hub) if r_tip != r_hub else 1.0
+            row['span_fractions'] = [(r - r_hub) / span for r in row['r_sections']]
+            
             n_sec = len(row['r_sections'])
             row['n_blades'] = mrow['n_blades']
             # chords / pitch_angles are per section; pad or trim to n_sec.
