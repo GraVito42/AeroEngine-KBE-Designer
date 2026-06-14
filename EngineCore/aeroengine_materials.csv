@@ -1,0 +1,61 @@
+Material Name,Component Category,Density [kg/m³],Yield Strength [MPa],Ultimate Tensile Strength [MPa],Elongation at Break [%],Max Operating Temperature [°C],Notes
+Aluminum 2618-T6 (RT),Sheet metal / Inlet / Nozzle,2750,360,420,7.0,300,Al-Cu-Mg-Ni-Fe alloy; T6 condition at room temperature.
+Aluminum 2618-T61 (Aged 230°C),Sheet metal / Inlet / Nozzle,2750,181,191,9.9,230,Over-aged condition; tested at 230°C operating temperature.
+Aluminum 2618-T61 (Aged RT),Sheet metal / Inlet / Nozzle,2750,265,351,7.1,230,Over-aged (1000h at 230°C); tested at room temperature.
+Ti-6Al-4V (Annealed Sheet RT),Sheet metal / Inlet / Nozzle,4430,866,920,8.0,350,Grade 5 annealed; minimum guaranteed values at room temperature.
+Ti-6Al-4V (Annealed Sheet 350°C),Sheet metal / Inlet / Nozzle,4430,563,598,15.0,350,Properties verified at 350°C; continuous use limit.
+AM-350 (Annealed RT),Sheet metal / Inlet / Nozzle,7810,380,724,35.0,550,Semi-austenitic steel annealed; maximum sheet formability.
+AM-350 (Cold Drawn RT),Sheet metal / Inlet / Nozzle,7810,834,1110,12.0,550,Semi-austenitic steel cold drawn before aging.
+A-286 (Aged Plate RT),Sheet metal / Inlet / Nozzle,7920,759,1035,15.0,704,Fe-Ni-Cr aged alloy; excellent notched fatigue resistance.
+Haynes 188 (Solution Ann. RT),Sheet metal / Inlet / Nozzle,8980,464,946,53.0,1095,Cobalt alloy solution annealed; excellent sheet formability.
+Hastelloy X (Solution Ann. RT),Sheet metal / Inlet / Nozzle,8220,352,793,43.0,1177,Nickel alloy solution annealed; typical RT values.
+Hastelloy X (Wrought 871°C),Combustor liners and casings,8220,310,483,41.0,1204,Solution annealed; mechanical properties verified at 871°C.
+Hastelloy X (Wrought 1000°C),Combustor liners and casings,8220,69,138,40.0,1204,Thermomechanical behavior verified at 1000°C.
+Haynes 188 (Wrought 871°C),Combustor liners and casings,8980,248,414,64.0,1095,High-temperature behavior verified at 871°C.
+Haynes 188 (Wrought 982°C),Combustor liners and casings,8980,131,243,59.0,1095,High-temperature behavior verified at 982°C.
+Haynes 188 (Wrought 1093°C),Combustor liners and casings,8980,64,129,32.0,1095,High-temperature behavior verified at 1093°C.
+Haynes 230 (Wrought RT),Combustor liners and casings,8970,390,860,40.0,1150,Ni-Cr-W-Mo alloy; very high cyclic oxidation stability.
+Inconel 617 (Wrought RT),Combustor liners and casings,8440,275,660,18.0,1095,Ni-Cr-Co-Mo alloy; excellent microstructural stability at temperature.
+Mar-M-509 (As-Cast RT),Combustor liners and casings,8850,396,674,11.0,1100,Gravity-cast cobalt alloy; hardened by primary carbides.
+Haynes 25 (Solution Ann. RT),Combustor liners and casings,9130,450,950,47.0,1095,Co-Ni-Cr-W alloy; excellent for loaded combustor liners.
+Nimonic 75 (Wrought RT),Combustor liners and casings,8370,300,750,35.0,1000,Historic Ni-Cr alloy; high sheet formability and weldability.
+Ti-6Al-4V (Grade 5 STA RT),Compressor rotor blades,4430,1100,1170,10.0,350,Solution treated and aged; LP rotor blades.
+Ti-6Al-4V (Grade 5 Ann. RT),Compressor rotor blades,4430,880,950,14.0,350,Annealed condition; very high FOD impact toughness.
+Ti-6242 (Cast RT),Compressor rotor blades,4540,760,860,6.0,450,Near-alpha cast alloy; HPC hubs and rotor blades.
+Ti-6242S (Aged 450°C RT),Compressor rotor blades,4540,1381,1516,9.3,540,Near-alpha alloy with silicon; thermo-optimized treatment.
+Ti-6242S (Aged 500°C RT),Compressor rotor blades,4540,1358,1463,9.0,540,Structured alloy for maximum continuous creep resistance.
+Ti-8Al-1Mo-1V (Duplex Ann. RT),Compressor rotor blades,4370,910,937,18.0,450,High torsional modulus alloy; HP compressor blades.
+TIMETAL 834 (Forged RT),Compressor rotor blades,4550,910,1030,6.0,600,Near-alpha leading alloy; bimodal grain forged condition.
+TIMETAL 834 (Forged 600°C),Compressor rotor blades,4550,450,585,9.0,600,Properties verified at 600°C; thermomechanical blade limit.
+Greek Ascoloy (HT Aged RT),Compressor rotor blades,7860,1034,1172,10.0,649,Quench and temper treatment for HCF-loaded blades.
+Inconel 718 (Peak Aged RT),Compressor rotor blades,8190,1035,1375,15.0,700,Used in last HPC stages and compressor discs.
+Ti-6Al-4V (Annealed RT),Compressor stator vanes,4430,880,950,14.0,350,Fixed LP stator vanes plastically formed.
+Ti-6242 (Aged 400°C RT),Compressor stator vanes,4540,1157,1248,11.3,450,HP stator vanes with high anti-abrasion surface hardness.
+Ti-8Al-1Mo-1V (Stator Bar RT),Compressor stator vanes,4370,910,937,18.0,450,Airfoil profile from hot-rolled bar stock.
+TIMETAL 834 (Cast HIP RT),Compressor stator vanes,4550,905,1025,5.0,600,Centrifugally cast and HIP compacted; HP stator.
+TIMETAL 834 (Cast HIP 600°C),Compressor stator vanes,4550,450,585,9.0,600,Properties at 600°C of beta-transformed grain stator.
+Greek Ascoloy (Annealed RT),Compressor stator vanes,7860,725,895,15.0,649,Annealed condition; maximum machinability for vane stamping.
+Greek Ascoloy (Stator 538°C),Compressor stator vanes,7860,483,579,22.0,649,Mechanical properties verified at 538°C.
+Greek Ascoloy (Stator 593°C),Compressor stator vanes,7860,379,462,30.0,649,Mechanical properties verified at 593°C.
+A-286 (Sol. Treated 982°C RT),Compressor stator vanes,7920,759,1035,15.0,704,Solution treated at 982°C to optimize notch toughness.
+Waspaloy (Solution Ann. RT),Compressor stator vanes,8200,443,888,50.1,980,Annealed HP stator vanes; high cold ductility.
+CMSX-4 (Single Crystal RT),Turbine rotor blades,8750,1035,1240,11.0,1150,2nd gen. single crystal; orientation.
+Rene N5 (Single Crystal RT),Turbine rotor blades,8900,1000,1225,10.0,1150,2nd gen. single crystal; exceptional axial creep resistance.
+Mar-M-247 (Poly. 871°C),Turbine rotor blades,8530,714,876,6.6,1050,Polycrystalline cast alloy; properties verified at 871°C.
+Mar-M-247 (Poly. 982°C),Turbine rotor blades,8530,388,534,6.4,1050,Polycrystalline cast alloy; properties verified at 982°C.
+Mar-M-247 (Poly. 1038°C),Turbine rotor blades,8530,266,382,8.3,1050,Polycrystalline cast alloy; properties verified at 1038°C.
+Waspaloy (Age Hardened RT),Turbine rotor blades,8200,899,1304,24.5,980,Historic forged superalloy; LP rotor blades.
+Waspaloy (Age Hardened 871°C),Turbine rotor blades,8200,357,456,48.0,980,Properties verified at 871°C; yield behavior.
+Rene 41 (Wrought Aged RT),Turbine rotor blades,8250,910,1310,14.0,870,Forged alloy for LP rotor blades and discs.
+CMSX-10 (Single Crystal RT),Turbine rotor blades,9050,1050,1280,11.0,1200,3rd gen. single crystal; >5% Re for HP blades.
+IN-100 (Polycrystalline RT),Turbine rotor blades,7910,850,1000,8.0,1000,Vacuum cast alloy with high Ti and Al content.
+Mar-M-509 (As-Cast Stator RT),Turbine stator vanes,8850,860,1114,14.0,1100,Investment-cast cobalt alloy; high thermal resistance.
+Mar-M-509 (LPBF Aged RT),Turbine stator vanes,8850,740,997,23.0,1100,LPBF printed and solution treated at 1250°C; recrystallized grain.
+Mar-M-509 (As-Cast 870°C),Turbine stator vanes,8850,290,350,4.0,1100,Properties verified at 870°C; HP stator vanes.
+Mar-M-302 (As-Cast RT),Turbine stator vanes,9200,200,320,10.0,1095,Co-Cr-W-Ta alloy; high thermal stability and impact resistance.
+X-40 (As-Cast RT),Turbine stator vanes,8600,345,650,15.0,1100,Historic cobalt alloy; used for HP turbine nozzle guide vanes.
+WI-52 (As-Cast RT),Turbine stator vanes,8870,386,674,12.0,1100,Co-Cr-W-Nb alloy; very high chemical stability at temperature.
+Haynes 188 (Sheet Stator RT),Turbine stator vanes,8980,464,946,53.0,1095,Static vanes formed from thin welded sheet.
+Haynes 188 (Sheet Stator 1000°C),Turbine stator vanes,8980,108,114,63.8,1095,Tensile properties verified at 1000°C.
+Haynes 230 (Wrought Stator RT),Turbine stator vanes,8970,390,860,40.0,1150,Stator vanes and turbine transition ducts.
+Inconel 617 (Wrought Stator RT),Turbine stator vanes,8440,275,660,18.0,1095,Excellent thermomechanical bending fatigue behavior.
