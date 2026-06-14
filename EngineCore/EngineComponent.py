@@ -15,8 +15,8 @@ for parent in Path(__file__).resolve().parents:
 from parapy.core import Base, Input, Attribute, Part
 from parapy.geom import GeomBase, Position, XOY, Cylinder, rotate
 
-from Thermodynamics.FlowStation import FlowStation
-from EngineCore.Material import Material
+from Thermodynamics import FlowStation
+from EngineCore import Material
 
 
 class EngineComponent(GeomBase):
@@ -237,4 +237,4 @@ if __name__ == '__main__':
     print(f"  area_in  [m²] : {comp.area_in:.4f}")
     print(f"  area_out [m²] : {comp.area_out:.4f}")
 
-    #display(comp)
+    display(comp)
