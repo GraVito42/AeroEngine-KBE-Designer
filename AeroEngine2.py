@@ -59,6 +59,8 @@ class AeroEngine(Base):
     thermodynamic_cycle = Input({})
 
     material_name = Input("Ti-6Al-4V")         # default structural material
+    show_compressor = Input(False)             # Defer compressor lofting by default
+    show_turbine = Input(False)                # Defer turbine lofting by default
 
     # Axial stacking offsets [m]. Parametric so the layout stays editable.
     # TODO #2: derive these from component lengths (inlet_length, compressor
@@ -172,6 +174,8 @@ class AeroEngine(Base):
             rpm=self.engine_features.get('rpm', 15000.0),
             material_name=self.material_name,
             position=translate(self.position, 'x', self.spool_x_offset),
+            show_compressor=self.show_compressor,
+            show_turbine=self.show_turbine,
         )
 
     # ------------------------------------------------------------------
@@ -193,6 +197,16 @@ class AeroEngine(Base):
     def compute_weights(self):
         """Force evaluation of the mass roll-up and log it."""
         print(f"[AeroEngine] total_weight = {self.total_weight:.3f} kg")
+
+    @action(label='Show Compressor')
+    def show_compressor_action(self):
+        """Show/render compressor blades in the 3D canvas."""
+        self.show_compressor = True
+
+    @action(label='Show Turbine')
+    def show_turbine_action(self):
+        """Show/render turbine blades in the 3D canvas."""
+        self.show_turbine = True
 
     # @action(label='Export report')
     # def export_report(self):

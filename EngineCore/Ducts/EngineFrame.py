@@ -299,26 +299,93 @@ class EngineFrame(Duct):
     # ------------------------------------------------------------------
 
     @Attribute
+    def profile_junction_check(self):
+        """
+        Diagnostic: reports start/end coordinates and gap of each ComposedCurve segment.
+
+        Inlet.profile_points ordering (curved type):
+          [0] = outlet_inner (x=inlet_length)  → ... → [highlight_idx] = highlight (min x)
+          → ... → [outlet_outer_idx] = outlet_outer (x=inlet_length, high r)
+
+        Therefore:
+          inlet_inner  = profile_points[:highlight_idx+1]  → [0]=outlet_inner, [-1]=highlight
+          inlet_outer  = profile_points[highlight_idx:]    → [0]=highlight,    [-1]=outlet_outer
+
+        Expected chain:
+          curveinlet_inner  : start=(highlight), end=(outlet_inner)
+          curve_internal    : start=(outlet_inner), end=(nozzle_inner_inlet)
+          curve_outer_casing: start=(nozzle_inner_inlet), end=(inlet_outlet_outer)
+          curveinlet_outer  : start=(inlet_outlet_outer), end=(highlight)
+
+        All gap_to_next values must be < 1e-6 m for ComposedCurve to succeed.
+        """
+
+        def _gap(a, b):
+            return ((a.x - b.x) ** 2 + (a.y - b.y) ** 2 + (a.z - b.z) ** 2) ** 0.5
+
+        return [
+            {
+                "curve": "curveinlet_inner",
+                "start": (round(self.curveinlet_inner.point1.x, 6),
+                          round(self.curveinlet_inner.point1.y, 6)),
+                "end": (round(self.curveinlet_inner.point2.x, 6),
+                        round(self.curveinlet_inner.point2.y, 6)),
+                "gap_to_next": round(_gap(self.curveinlet_inner.point2,
+                                          self.curve_internal.point1), 8),
+            },
+            {
+                "curve": "curve_internal",
+                "start": (round(self.curve_internal.point1.x, 6),
+                          round(self.curve_internal.point1.y, 6)),
+                "end": (round(self.curve_internal.point2.x, 6),
+                        round(self.curve_internal.point2.y, 6)),
+                "gap_to_next": round(_gap(self.curve_internal.point2,
+                                          self.curve_outer_casing.point1), 8),
+            },
+            {
+                "curve": "curve_outer_casing",
+                "start": (round(self.curve_outer_casing.point1.x, 6),
+                          round(self.curve_outer_casing.point1.y, 6)),
+                "end": (round(self.curve_outer_casing.point2.x, 6),
+                        round(self.curve_outer_casing.point2.y, 6)),
+                "gap_to_next": round(_gap(self.curve_outer_casing.point2,
+                                          self.curveinlet_outer.point1), 8),
+            },
+            {
+                "curve": "curveinlet_outer",
+                "start": (round(self.curveinlet_outer.point1.x, 6),
+                          round(self.curveinlet_outer.point1.y, 6)),
+                "end": (round(self.curveinlet_outer.point2.x, 6),
+                        round(self.curveinlet_outer.point2.y, 6)),
+                "gap_to_next (closure)": round(_gap(self.curveinlet_outer.point2,
+                                                    self.curveinlet_inner.point1), 8),
+            },
+        ]
+
+    @Attribute
     def outer_casing_points(self):
         """
-        For each internal profile point, compute the corresponding outer
-        casing point by linear interpolation on the straight line connecting:
-          - inlet duct outlet outer  (x = inlet_length,                r = inlet_duct.r_outlet_outer)
-          - nozzle duct inlet outer  (x = inlet_length + casing_length, r = nozzle_duct.r_inlet_outer)
-        These points are used in profile_points to give FittedCurve enough
-        outer wall waypoints and avoid oscillation.
+        Outer casing points computed as internal_profile + interpolated wall thickness.
+        This ensures the outer wall FOLLOWS the inner wall shape rather than cutting
+        across it on a fixed straight line between two endpoints.
+
+        Wall thickness interpolates linearly between:
+          casing_inlet_wall_thickness  at x = inlet_length
+          casing_outlet_wall_thickness at x = inlet_length + casing_length
         """
         return [
-        Point(
-            x_abs,
-            self.inlet_duct.r_outlet_outer
-            + (self.nozzle_duct.r_inlet_outer - self.inlet_duct.r_outlet_outer)
-            * (x_abs - self.inlet_length)
-            / (self.nozzle_duct.profile_points[1].x - self.inlet_length),
-            0.0,
-        )
-        for x_abs, _ in self.resolved_internal_profile
-    ]
+            Point(
+                x_abs,
+                r_inner + (
+                        self.casing_inlet_wall_thickness
+                        + (self.casing_outlet_wall_thickness - self.casing_inlet_wall_thickness)
+                        * (x_abs - self.inlet_length)
+                        / self.casing_length
+                ),
+                0.0,
+            )
+            for x_abs, r_inner in self.resolved_internal_profile
+        ]
 
     # ------------------------------------------------------------------
     # Split inlet profile_points into inner and outer halves
@@ -788,6 +855,7 @@ if __name__ == "__main__":
         print(f"  E_s           : {frame.strain_energy_casing:.1f} J")
         print(f"  margin        : {frame.containment_margin:.3f}")
         print(f"  is_contained  : {frame.is_contained()}")
+        print(f"  profile_junction_check: {frame.profile_junction_check}")
         warns = frame.validate()
         if warns:
             print("  [WARNINGS]")

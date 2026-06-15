@@ -58,6 +58,9 @@ class Turbomachine(EngineComponent, GeomBase):
     # ------------------------------------------------------------------
 
     machine_type = Input('compressor')
+
+    show_blades = Input(False)
+    """If False, the 3D blade geometries are hidden by default to keep load times fast."""
     """'compressor' or 'turbine'. Subclasses (Compressor/Turbine) pin this.
     Drives the 'C'/'T' MEANGEN flag and the rotor/stator row order in Stage."""
 
@@ -563,6 +566,7 @@ class Turbomachine(EngineComponent, GeomBase):
             stage_axial_offset    = self.axial_offset + self.stage_axial_starts[child.index],
             rotor_color           = self.material.color,
             stator_color          = self.stator_material.color,
+            show_blades           = self.show_blades,
         )
 
     # ------------------------------------------------------------------

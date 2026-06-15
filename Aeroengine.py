@@ -21,6 +21,9 @@ Coordinate frame: rotate(XOY, 'y', 90°) aligns ParaPy Z-up with engine X-axial.
 # Ensure project root is in sys.path when running this file directly
 import sys
 from pathlib import Path
+import math
+import numpy as np
+from scipy.optimize import brentq
 for parent in Path(__file__).resolve().parents:
     if (parent / "EngineCore").exists() and (parent / "Thermodynamics").exists():
         if str(parent) not in sys.path:
@@ -29,18 +32,69 @@ for parent in Path(__file__).resolve().parents:
 
 from parapy.core import Base, Input, Attribute, Part, action
 from parapy.geom import GeomBase, rotate, XOY, translate, Position
+from concurrent.futures import ThreadPoolExecutor
 
 from EngineCore.Ducts.EngineFrame import EngineFrame
 from EngineCore.Combustor import Combustor
 from EngineCore.Turbomachinery.Spool import Spool
+from EngineCore.Turbomachinery.Compressor import Compressor
+from EngineCore.Turbomachinery.Turbine import Turbine
 from Thermodynamics.FlowStation import FlowStation
 from Thermodynamics.TurbojetSimplified import TurbojetSimplified
 from Thermodynamics.FlowCondition import FlowCondition
 
-# TODO: InputParser and ReportWriter are future utility classes.
-#       Uncomment these imports once the modules exist.
-# from IO_Management.InputParser import InputParser
+from IO_Management.InputParser import InputParser
 # from IO_Management.ReportWriter import ReportWriter
+
+
+DEFAULT_FLIGHT_CONDITIONS = {
+    "altitude": 10668.0,       # m   — cruise FL350
+    "Mach": 0.78,              # -   — cruise Mach
+    "ISA_deviation": 0.0,      # K   — standard day
+}
+
+DEFAULT_ENGINE_FEATURES = {
+    "IPR":  0.99,              # -   — inlet pressure recovery (tipical cruise condition)
+    "CPR": 30.0,               # -   — compressor pressure ratio
+    "CCPR": 0.96,              # -   — combustor pressure ratio
+    "TPR": 0.03,               # -   — turbine pressure ratio
+    "NPR": 0.2,                # -   —  nozzle pressure ratio
+    "I_eta": 0.99,              # -   — inlet isentropic efficiency
+    "C_eta": 0.88,             # -   — compressor isentropic efficiency
+    "CC_eta": 0.995,            # -   — combustor isentropic efficiency
+    "T_eta": 0.90,             # -   — turbine isentropic efficiency
+    "N_eta": 0.98,              # -   —  nozzle isentropic efficiency
+    "TIT": 1500.0,             # K   — turbine entry temperature
+    "Thrust_required": 35000,  # N   — thrust required
+    "LHV": 43.0e6,             # J/kg — Fuel lower heating value
+    "gamma_g": 1.33,           # -   — Gas specific-heat ratio
+    "cpg": 1150.0,             # J/kg/K — cp combustion gas
+    "r_gas": 287.05,           # J/kg/K — Specific gas constant (air)
+    "mech_eta": 0.98,          # -      — Shaft mechanical efficiency
+    "stage_PR_max": 1.4,       # -      — Axial-compressor per-stage total-pressure ratio ceiling
+    "C_work_coeff": 0.4,        # -      — Compressor stage loading coefficient
+    "T_work_coeff": 1.5,         # .      — Turbine stage loading coefficient
+    "C_reaction_coeff": 0.5,  # -      — Compressor stage reaction coefficient
+    "T_reaction_coeff": 0.5  # .      — Turbine stage reaction coefficient
+}
+
+DEFAULT_ENGINE_GEOMETRY = {
+    "d_max": 1.0,              # m  — Engine maximum diameter == Compressor inlet diameter
+    "spool_tip_length": 0.2,   # m  — Spool tip length == Combustor x_offset wrt to the start of the spool
+    "spool_length": 1.5,       # m  — Spool length
+    "inlet_length": 0.55,      # m  — inlet duct axial length
+    "nozzle_length": 0.45,     # m — nozzle axial length
+    "casing_wall_thickness": 0.012      # m — casing wall thickness (uniform default)
+}
+
+DEFAULT_ENGINE_MATERIALS = {
+    "C_rotor": "Ti",
+    "C_stator": "Ti",
+    "T_rotor": "Ti",
+    "T_stator": "Ti",
+    "casing": "Ti",
+    "combustor": "Ti",
+}
 
 
 class AeroEngine(GeomBase):
@@ -57,49 +111,60 @@ class AeroEngine(GeomBase):
 
     #: str — path to the .xlsx input file (consumed by InputParser)
     input_file = Input("")
+    work_dir = Input("")
 
-    # --- This section will be overridden by Input parser call ---------
+    @Input
+    def design_flight_conditions(self):
+        return {**DEFAULT_FLIGHT_CONDITIONS, **self.input_parser.flight_conditions}
 
-    #: dict[str, float] — altitude [m], Mach [-], ISA deviation [K]
-    design_flight_conditions:dict = Input({
-        "altitude": 10668.0,       # m   — cruise FL350
-        "Mach": 0.78,              # -   — cruise Mach
-        "ISA_deviation": 0.0,      # K   — standard day
-    })
+    @Input
+    def engine_features(self):
+        return {**DEFAULT_ENGINE_FEATURES, **self.input_parser.engine_features}
 
-    #: dict[str, float] — top-level cycle parameters
-    engine_features:dict = Input({
-        "IPR": 5.0,                # -   — inlet pressure ratio
-        "CPR": 30.0,               # -   — compressor pressure ratio
-        "CCPR": 0.98,              # -   — combustor pressure ratio
-        "TPR": 0.03,               # -   — turbine pressure ratio
-        "NPR": 0.2,                # -   —  nozzle pressure ratio
-        "I_eta": 5.0,              # -   — inlet isentropic efficiency
-        "C_eta": 30.0,             # -   — compressor isentropic efficiency
-        "CC_eta": 0.98,            # -   — combustor isentropic efficiency
-        "T_eta": 0.03,             # -   — turbine isentropic efficiency
-        "N_eta": 0.2,              # -   —  nozzle isentropic efficiency
-        "TIT": 1500.0,             # K   — turbine entry temperature
-        "Thrust_required": 35000,  # N   — thrust required
-        "LHV": 43.0e6,             # J/kg — Fuel lower heating value
-        "gamma_g": 1.33,           # -   — Gas specific-heat ratio
-        "cpg": 1150.0,             # J/kg/K — cp combustion gas
-        "r_gas": 287.05,           # J/kg/K — Specific gas constant (air)
-        "mech_eta": 0.98,          # -      — Shaft mechanical efficiency
-    })
+    @Input
+    def engine_geometry(self):
+        return {**DEFAULT_ENGINE_GEOMETRY, **self.input_parser.engine_geometry}
 
-    engine_geometry:dict = Input({
-        "d_max": 1.0,              # m  — Engine maximum diameter == Compressore inlet diameter
-        "inlet_length": 0.55,      # m — inlet duct axial length
-        "casing_length": 1.0,      # m — structural casing barrel axial length
-        "nozzle_length": 0.45,     # m — nozzle axial length
-        "combustor_internal_radius": 0.15,  # m — combustor inner radius
-        "combustor_external_radius": 0.30,  # m — combustor outer radius
-        "combustor_length": 0.40,          # m — combustor axial length
-        "casing_wall_thickness": 0.012      # m — casing wall thickness (uniform default)
-    })
+    @Input
+    def engine_materials(self):
+        return {**DEFAULT_ENGINE_MATERIALS, **self.input_parser.engine_materials}
+
+    show_compressor = Input(False)
+    """If False, the compressor 3D blade geometries are hidden by default to keep load times fast."""
+
+    show_turbine = Input(False)
+    """If False, the turbine 3D blade geometries are hidden by default to keep load times fast."""
+
+    # --- Parsed inputs (InputParser) ---
+
+    @Attribute
+    def parsed_inputs(self):
+        return self.input_parser.raw_data
+
+    @action(label="Configure Inputs")
+    def configure(self):
+        """Pre-launch: open GUI, validate, write xlsx, update input_file."""
+        result = self.input_parser.launch_gui(filepath=self.input_file or None)
+        if result is not None:
+            self.input_file = result[0]
+        return self
 
     #----------------------------------------------------------------------
+
+    @Input
+    def inlet_wall_thickness(self):
+        if "inlet_wall_thickness" in self.engine_geometry:
+            return self.engine_geometry["inlet_wall_thickness"]
+        else:
+            return self.engine_geometry["casing_wall_thickness"]
+
+    @Input
+    def nozzle_wall_thickness(self):
+        if "nozzle_wall_thickness" in self.engine_geometry:
+            return self.engine_geometry["nozzle_wall_thickness"]
+        else:
+            return self.engine_geometry["casing_wall_thickness"]
+
 
     # ====================================================================
     # Flight flow condition
@@ -126,7 +191,7 @@ class AeroEngine(GeomBase):
             # ---- Gas / fuel properties (mirror FlowCondition) ------------------ #
             gamma_a = self.flight_condition_flow.gamma,                               #   [Pa]
             gamma_g = self.engine_features["gamma_g"],  # Gas specific-heat ratio           [-]
-            cpa     = self.flight_condition_flow.c_p,                                 #   [J/kg/K]
+            cpa     = self.flight_condition_flow.cp,                                 #   [J/kg/K]
             cpg = self.engine_features["cpg"],                                        #   [J/kg/K]
             r_gas = self.engine_features["r_gas"],                                    #   [J/kg/K]
             LHV = self.engine_features["LHV"],                                        #   [J/kg]
@@ -143,35 +208,247 @@ class AeroEngine(GeomBase):
             nozzle_eff = self.engine_features["N_eta"],  # Nozzle isentropic efficiency      [-]
             )
 
+    # ------------------------------------------------------------------
+    # Spool primary sizing parameters
+    # ------------------------------------------------------------------
+
+    @Attribute
+    def compressor_delta_h(self):
+        """#: J/kg — compressor total enthalpy rise: cp_a*(Tt3 - Tt2)."""
+        return self.simplified_engine.cpa * (
+                self.simplified_engine.Tt3 - self.simplified_engine.Tt2)
+
+    @Attribute
+    def turbine_delta_h(self):
+        """#: J/kg — turbine total enthalpy drop: cp_g*(Tt4 - Tt5)."""
+        return self.simplified_engine.cpg * (
+                self.simplified_engine.Tt4 - self.simplified_engine.Tt5)
+
+    @Attribute
+    def compressor_n_stages(self):
+        """#: int — stage count from n = ceil(ln(PR_c) / ln(PR_stage_max))."""
+        return max(1, math.ceil(
+            math.log(self.simplified_engine.comp_pr) / math.log(self.engine_features["stage_PR_max"])))
+
+    @Attribute
+    def turbine_n_stages(self):
+        """#: int — turbine stages from equal-shaft loading:
+        n_t = ceil(dh_t * n_c * psi_c / (psi_t * dh_c)), dh_t = cp_g*(Tt4 - Tt5)."""
+        return max(1, math.ceil(
+            self.simplified_engine.cpg * (self.simplified_engine.Tt4 - self.simplified_engine.Tt5)
+            * self.compressor_n_stages * self.engine_features["C_work_coeff"]
+            / (self.engine_features["T_work_coeff"] * self.compressor_delta_h)))
+
+    @Attribute
+    def shaft_rpm(self):
+        """#: rev/min — from stage loading U = sqrt(dh_c/(n_c*psi_c)),
+        N = 60*U / (2*pi*r_mean)."""
+        return 60.0 * math.sqrt(
+            self.compressor_delta_h / (self.compressor_n_stages * self.engine_features["C_work_coeff"])) / (
+                2.0 * math.pi * self.spool_design_radius)
+
+    @Attribute
+    def spool_mech_efficiency(self):
+        """[-] — mechanical efficiency for spool"""
+        return self.engine_features["mech_eta"]
+
+    @Attribute
+    def flight_velocity(self):
+        """#: Flight velocity [m/s] for thrust power calc"""
+        return self.simplified_engine.station0.v
+
     # ====================================================================
     # Using the simplified model to build the engine
     # ====================================================================
 
     def build_engine(self):
         """
-        Here we use the simplified engine to:
-        - obtain the mass_flow
-        - using mass_flow and Mach (at the compressor inlet == after the inlet)
-          we obtain the Area of the annulus at the entrance of the compressor
-        - we can compute all the flow stations Mach and Areas, using
-            - all the stations in the simplified_engine
-            - isentropic_trans in FlowStation
-            - isentropic_trans_th in FlowCondition
-            - mach_to_area in FlowStation
-            - Combustor (auxiliar @Part)
-        - we can compute the spool design radius == (d_max/2)*(1- np.sqrt(1-(4*Area_annulus/pi)))
-        :return:
-            - dict(
-            "Inlet": FlowStation at the Inlet == flight_condition_flow + Area at the inlet mouth
-            "Compressor": FlowStation at the Compressor inlet
-            "Combustor": FlowStation at the Combustor inlet
-            "Turbine": FlowStation at the Turbine inlet
-            "Nozzle": FlowStation at the Nozzle inlet
-            "spool_radius": spool radius
-            )
-            - spool radius
+        Build the engine flow stations from the simplified inverse-cycle model.
+
+        Annulus area at the compressor inlet is derived from first principles
+        via a 1D root-find (continuity + duty coefficients, no assumed Mach).
+        Downstream areas come from auxiliary meangen/stagen runs.
+        Mach at every station is recovered from continuity via mach_from_area.
+
+        :return: dict with keys
+            "Inlet", "Compressor", "Combustor", "Turbine", "Nozzle" -> FlowStation
+            "spool_radius" -> float [m]
         """
-        return
+        import os
+
+        mass_flow = self.simplified_engine.mass_flow
+        m_g = self.simplified_engine.m_g
+
+        # Station-2 totals (FlowCondition, no Mach/area)
+        pt2 = self.simplified_engine.station2.p_total
+        Tt2 = self.simplified_engine.station2.T_total
+
+        # Gas properties from the resolved cycle
+        gam = self.simplified_engine.station0.gamma  # air gamma from station0
+        cp_a = self.simplified_engine.cpa
+        R_a = self.simplified_engine.r_gas
+
+        phi = self.engine_features["C_work_coeff"]  # flow coefficient phi = Vax/U
+        d_max = self.engine_geometry["d_max"]
+        r_tip = d_max / 2.0
+
+        # ------------------------------------------------------------------
+        # Root-find: spool_radius (r_hub) such that
+        #   A_geometry(r_hub) == A_continuity(V_ax(r_hub))
+        # V_ax depends on r_hub through: r_mean -> U -> V_ax = phi * U
+        # rpm is derived inline (same formula as shaft_rpm @Attribute, but
+        # computed over r_mean so we stay acyclic w.r.t. build_results).
+        # ------------------------------------------------------------------
+        def _residual(r_hub):
+            r_mean = (r_tip + r_hub) / 2.0
+            rpm_loc = (
+                    60.0
+                    * math.sqrt(
+                self.compressor_delta_h
+                / (self.compressor_n_stages * self.engine_features["C_work_coeff"])
+            )
+                    / (2.0 * math.pi * r_mean)
+            )
+            U_loc = rpm_loc * math.pi / 30.0 * r_mean  # simplifies to sqrt(dH/(n*psi))
+            V_ax = phi * U_loc
+            T_stat = Tt2 - V_ax ** 2 / (2.0 * cp_a)
+            if T_stat <= 0.0:
+                return 1e9
+            p_stat = pt2 * (T_stat / Tt2) ** (gam / (gam - 1.0))
+            rho = p_stat / (R_a * T_stat)
+            A_cont = mass_flow / (rho * V_ax)
+            A_geom = math.pi * (r_tip ** 2 - r_hub ** 2)
+            return A_geom - A_cont
+
+        assert _residual(1e-3) * _residual(r_tip - 1e-3) < 0.0, (
+            "build_engine: no root for r_hub in (0, r_tip). "
+            "Check d_max, C_work_coeff, or compressor_delta_h."
+        )
+        spool_radius = brentq(_residual, 1e-3, r_tip - 1e-3, xtol=1e-6)
+
+        A_compressor = math.pi * (r_tip ** 2 - spool_radius ** 2)
+
+        # Inlet: freestream Mach == flight Mach (physical identity)
+        inlet = FlowStation(
+            station_number=1,
+            fluid_type="air",
+            p_total=self.flight_condition_flow.p_total,
+            T_total=self.flight_condition_flow.T_total,
+            mass_flow=mass_flow,
+            Mach=self.design_flight_conditions["Mach"],
+        )
+
+        compressor = FlowStation.mach_from_area(
+            A_compressor, pt2, Tt2, mass_flow, fluid_type="air",
+        )
+
+        # RPM consistent with the spool_radius solution
+        rpm_local = (
+                60.0
+                * math.sqrt(self.compressor_delta_h
+            / (self.compressor_n_stages * self.engine_features["C_work_coeff"]))
+                / (2.0 * math.pi * spool_radius)
+        )
+
+        # Auxiliary working directory: self.work_dir + /aux only.
+        # Compressor and Turbine append /compressor and /turbine internally.
+        aux_work_dir = os.path.join(self.work_dir, "aux_components")
+
+        # ==================================================================
+        # TASK 1 — combustor inlet area (station 3) from compressor exit geometry
+        # compressor: rotor-first / stator-last (confirmed from Turbomachine.py)
+        # r_sections: [0]=hub, [-1]=tip (confirmed from StageParser._assemble_row)
+        # ==================================================================
+        compressor_aux = Compressor(
+            inflow_conditions=compressor,
+            station_out=3,
+            n_stages=self.compressor_n_stages,
+            rpm=rpm_local,
+            design_radius=spool_radius,
+            delta_H=self.compressor_delta_h,
+            pressure_ratio=self.simplified_engine.comp_pr,
+            isos_efficiency=self.engine_features["C_eta"],
+            working_directory=aux_work_dir,
+        )
+        comp_stages = compressor_aux.stage_data  # triggers meangen + stagen
+        # TODO: verify row/section index convention with Architect
+        hub_radius_compressor_exit = comp_stages[-1]["stator"]["r_sections"][0]
+        tip_radius_compressor_exit = comp_stages[-1]["stator"]["r_sections"][-1]
+        A_combustor = math.pi * (
+                tip_radius_compressor_exit ** 2 - hub_radius_compressor_exit ** 2
+        )
+        combustor = FlowStation.mach_from_area(
+            A_combustor,
+            self.simplified_engine.station3.p_total,
+            self.simplified_engine.station3.T_total,
+            mass_flow,
+            fluid_type="air",
+        )
+
+        # ==================================================================
+        # TASK 2 + 3 — turbine inlet (station 4) and nozzle inlet (station 5)
+        # turbine: stator-first / rotor-last (confirmed from Turbomachine.py)
+        # Preliminary turbine inflow uses A_combustor (best available pre-Fortran area)
+        # ==================================================================
+        turbine_inflow_prelim = FlowStation.mach_from_area(
+            A_combustor,
+            self.simplified_engine.station4.p_total,
+            self.simplified_engine.station4.T_total,
+            m_g,
+            fluid_type="fuel_gas",
+        )
+        turbine_aux = Turbine(
+            inflow_conditions=turbine_inflow_prelim,
+            station_out=5,
+            n_stages=self.turbine_n_stages,
+            rpm=rpm_local,
+            design_radius=spool_radius,
+            delta_H=self.turbine_delta_h,
+            pressure_ratio=self.engine_features["TPR"],
+            reaction=0.5,
+            isos_efficiency=self.engine_features["T_eta"],
+            working_directory=aux_work_dir,
+        )
+        turb_stages = turbine_aux.stage_data  # triggers meangen + stagen
+
+        # TASK 2 — turbine inlet = first stage stator LE
+        # TODO: verify row/section index convention with Architect
+        hub_radius_turbine_inlet = turb_stages[0]["stator"]["r_sections"][0]
+        tip_radius_turbine_inlet = turb_stages[0]["stator"]["r_sections"][-1]
+        A_turbine = math.pi * (
+                tip_radius_turbine_inlet ** 2 - hub_radius_turbine_inlet ** 2
+        )
+        turbine = FlowStation.mach_from_area(
+            A_turbine,
+            self.simplified_engine.station4.p_total,
+            self.simplified_engine.station4.T_total,
+            m_g,
+            fluid_type="fuel_gas",
+        )
+
+        # TASK 3 — nozzle inlet = turbine exit = last stage rotor TE
+        # Totals from station5 (turbine exit / nozzle inlet, not nozzle throat)
+        hub_radius_turbine_exit = turb_stages[-1]["rotor"]["r_sections"][0]
+        tip_radius_turbine_exit = turb_stages[-1]["rotor"]["r_sections"][-1]
+        A_nozzle = math.pi * (
+                tip_radius_turbine_exit ** 2 - hub_radius_turbine_exit ** 2
+        )
+        nozzle = FlowStation.mach_from_area(
+            A_nozzle,
+            self.simplified_engine.station5.p_total,
+            self.simplified_engine.station5.T_total,
+            m_g,
+            fluid_type="fuel_gas",
+        )
+
+        return {
+            "Inlet": inlet,
+            "Compressor": compressor,
+            "Combustor": combustor,
+            "Turbine": turbine,
+            "Nozzle": nozzle,
+            "spool_radius": spool_radius,
+        }
 
     # ------------------------------------------------------------------
     # Flow station inputs (pass-through to children)
@@ -191,6 +468,10 @@ class AeroEngine(GeomBase):
         return self.build_results["Compressor"]
 
     @Attribute
+    def combustor_inflow(self):
+        return self.build_results["Combustor"]
+
+    @Attribute
     def turbine_inflow(self):
         return self.build_results["Turbine"]
 
@@ -202,175 +483,56 @@ class AeroEngine(GeomBase):
     def spool_design_radius(self):
         return self.build_results["spool_radius"]
 
-    #: dict[int, float] — station-keyed total pressures [Pa] / temps [K]
-    #:   keys = station numbers (2, 3, 4, 5, 6, …)
-    #:   values = total pressure OR temperature at that station
-    @Attribute
-    def thermodynamic_cycle(self):
-        return {
-        2: 101325.0,               # Pa — fan face
-        3: 810600.0,               # Pa — compressor exit (OPR=8 example)
-        4: 810600.0,               # Pa — combustor exit  (isobaric)
-        5: 180000.0,               # Pa — turbine exit
-        6: 120000.0,               # Pa — nozzle inlet
-        }
-
     # ------------------------------------------------------------------
-    # This part must be replaced with @Attributes,
-    # computing all these values coherently with the other results
+    # Internal profile point for the EngineFrame
     # ------------------------------------------------------------------
 
-    # #: J/kg — compressor total enthalpy rise
-    # compressor_delta_h = Input(150000.0)
-    #
-    # #: int — compressor stage count
-    # compressor_n_stages = Input(5)
-    #
-    # #: int — turbine stage count
-    # turbine_n_stages = Input(3)
-    #
-    # #: rev/min — shaft rotational speed
-    # shaft_rpm = Input(12000.0)
-    #
-    # #: m — inter-machine axial gap on the spool
-    # spool_gap_length = Input(0.25)
-
     @Attribute
-    def spool_mech_efficiency(self):
-        """[-] — mechanical efficiency for spool"""
-        return self.engine_features["mech_eta"]
+    def internal_profile(self):
+        # TODO: read actual (x,r) points from self.spool geometry once Spool is built.
+        # x coordinates come from Spool's resolved axial stack (inlet LE, compressor TE,
+        # turbine LE, turbine TE).  Tip radii come from stage_data via Spool @Attributes.
+        # These trigger meangen+stagen on the real spool (not the aux sizing run).
+        return [
+            # 1. End of inlet == start of compressor (compressor LE, first rotor tip)
+            (self.spool.x_start_compressor,
+             self.spool.compressor_tip_radii[0]),
 
-    # ------------------------------------------------------------------
-    # Here the Spool must be built
-    # ------------------------------------------------------------------
+            # 2. End of compressor == start of combustor (compressor TE, last stator tip)
+            (self.spool.compressor_end_x,
+             self.spool.compressor_tip_radii[1]),
 
-    # @Part
-    # def spool(self):
-    #     return Spool()
+            # 3. End of combustor == start of turbine (turbine LE, first stator tip)
+            (self.spool.turbine_start_x,
+             max(self.spool.turbine_tip_radii[0], self.spool.compressor_tip_radii[1])),
 
-    # THIS MUST BE DEFINED AFTER THE SPOOL:
-    # all its inputs are LITERALLY x and r of all the maximum point of the spool
-    # internal_profile = Input([
-    #     (0.02, 0.080),
-    #     (0.35, 0.075),
-    #     (0.37, 0.090),
-    #     (0.63, 0.090),
-    #     (0.65, 0.070),
-    #     (0.95, 0.089),
-    # ])
+            # 4. End of turbine == start of nozzle (turbine TE, last rotor tip)
+            (self.spool.turbine_end_x,
+             self.spool.turbine_tip_radii[1]),
+        ]
 
-
-
-    @Attribute
-    def flight_velocity(self):
-        """#: Flight velocity [m/s] for thrust power calc"""
-        return self.flight_condition_flow.v
-
-    # ==================================================================
-    # @Attribute SLOTS
-    # ==================================================================
-
-    # --- Parsed inputs (InputParser) ---
-
-    @Attribute
-    def parsed_inputs(self):
+    # "casing_length": 1.0,  # m — structural casing barrel axial length -> this must be derived AFTER THE DEFINITION OF THE SPOOL and the combustor length above.
+    #
+    @Input
+    def combustor_length(self):
+        """Combustor axial length [m].
+        Sizing via residence time requires empirical combustion intensity
+        parameters not available in the 1D cycle model. Default 0.35 m is
+        representative of modern annular combustors at this thrust class.
+        Override by adding "combustor_length" to engine_geometry if a better
+        estimate is available.
         """
-        Result of InputParser.decode_inputs(self.input_file).
-        Returns an empty dict until InputParser is wired up.
+        return self.engine_geometry.get("combustor_length", 0.35)
+
+    @Attribute
+    def casing_length(self):
+        """Axial length of the structural barrel [m].
+        Derived from the real Spool geometry: from the end of the inlet duct
+        to the turbine exit, as resolved by meangen/stagen. This is the
+        authoritative value — it differs from engine_geometry["spool_length"]
+        whenever the Fortran meanline solution adjusts the axial chord distribution.
         """
-        # TODO: Uncomment once InputParser module exists:
-        # return InputParser.decode_inputs(self.input_file)
-        return {}
-
-    # --- Default flow stations (created from dicts when not passed) ---
-
-    @Attribute
-    def _inlet_flow_station(self):
-        """FlowStation at station 1 — freestream conditions."""
-        # TODO: Derive from parsed_inputs when InputParser is wired
-        return self.inlet_flow if self.inlet_flow is not None else FlowStation(
-            station_number=1,
-            fluid_type="air",
-            p_total=101325.0,
-            T_total=288.15,
-            mass_flow=self.engine_features["mass_flow"],
-            Mach=self.design_flight_conditions["Mach"],
-        )
-
-    @Attribute
-    def _compressor_inlet_flow_station(self):
-        """FlowStation at station 2 — compressor face."""
-        # TODO: Derive from parsed_inputs / inlet outlet when InputParser is wired
-        return self.compressor_inlet_flow if self.compressor_inlet_flow is not None else FlowStation(
-            station_number=2,
-            fluid_type="air",
-            p_total=self.thermodynamic_cycle.get(2, 101325.0),
-            T_total=300.0,
-            mass_flow=self.engine_features["mass_flow"] / (1.0 + self.engine_features["BPR"]),
-            Mach=0.45,
-        )
-
-    @Attribute
-    def _combustor_inlet_flow_station(self):
-        """FlowStation at station 3 — compressor exit / combustor inlet."""
-        # TODO: Wire to actual compressor outlet when integration is complete
-        return FlowStation(
-            station_number=3,
-            fluid_type="air",
-            p_total=self.thermodynamic_cycle.get(3, 810600.0),
-            T_total=580.0,
-            mass_flow=self.engine_features["mass_flow"] / (1.0 + self.engine_features["BPR"]),
-            Mach=0.3,
-        )
-
-    @Attribute
-    def _combustor_outlet_flow_station(self):
-        """FlowStation at station 4 — combustor exit / turbine inlet (TIT-driven)."""
-        return self.turbine_inlet_flow if self.turbine_inlet_flow is not None else FlowStation(
-            station_number=4,
-            fluid_type="fuel_gas",
-            p_total=self.thermodynamic_cycle.get(4, 810600.0),
-            T_total=self.engine_features["TET"],
-            mass_flow=self.engine_features["mass_flow"] / (1.0 + self.engine_features["BPR"]) * 1.02,
-            Mach=0.3,
-        )
-
-    @Attribute
-    def _nozzle_inlet_flow_station(self):
-        """FlowStation at station 6 — turbine exit / nozzle inlet."""
-        return self.nozzle_inlet_flow if self.nozzle_inlet_flow is not None else FlowStation(
-            station_number=6,
-            fluid_type="fuel_gas",
-            p_total=self.thermodynamic_cycle.get(6, 120000.0),
-            T_total=900.0,
-            mass_flow=self.engine_features["mass_flow"] / (1.0 + self.engine_features["BPR"]) * 1.02,
-            Mach=0.45,
-        )
-
-    # --- Axial stacking offsets ---
-
-    @Attribute
-    def combustor_x_offset(self):
-        """Axial X position of the combustor leading face [m].
-        Placed after the inlet duct plus a fraction of the casing."""
-        # TODO: Verify exact placement once component lengths are finalised
-        return self.inlet_length + self.casing_length * 0.35
-
-    @Attribute
-    def spool_x_start(self):
-        """Axial X position where the spool shaft begins [m]."""
-        # TODO: Verify against final casing internal layout
-        return self.inlet_length + 0.02
-
-    @Attribute
-    def spool_x_start_compressor(self):
-        """Axial X position of the compressor leading edge [m]."""
-        return self.spool_x_start + 0.05
-
-    @Attribute
-    def spool_x_end(self):
-        """Axial X position where the spool shaft ends [m]."""
-        return self.inlet_length + self.casing_length - 0.05
+        return self.spool.turbine_end_x - self.engine_geometry["inlet_length"]
 
     # --- Aggregate weight ---
 
@@ -381,123 +543,95 @@ class AeroEngine(GeomBase):
         # TODO: Verify attribute names match child implementations once all wired
         return self.engine_frame.weight + self.combustor.weight + self.spool.total_weight
 
-    # --- Preliminary 1-D performance ---
-
-    @Attribute
-    def core_mass_flow(self):
-        """Core mass flow [kg/s] = total / (1 + BPR)."""
-        return self.engine_features["mass_flow"] / (1.0 + self.engine_features["BPR"])
-
-    @Attribute
-    def bypass_mass_flow(self):
-        """Bypass mass flow [kg/s] = total - core."""
-        return self.engine_features["mass_flow"] - self.core_mass_flow
-
-    @Attribute
-    def exhaust_velocity(self):
-        """Simplified hot-jet exhaust velocity [m/s].
-        V_e = sqrt(2 * cp * T_total_turbine_exit * (1 - (p_amb / p_total_exit)^((γ-1)/γ)))
-        """
-        return (2.0 * 1005.0 * 900.0 * (
-            1.0 - (101325.0 / self.thermodynamic_cycle.get(6, 120000.0)) ** 0.2857
-        )) ** 0.5
-
-    @Attribute
-    def specific_thrust(self):
-        """Specific thrust [N·s/kg] = V_exhaust - V_flight."""
-        return self.exhaust_velocity - self.flight_velocity
-
-    @Attribute
-    def net_thrust(self):
-        """Net thrust [N] = core_mass_flow * specific_thrust.
-        (Bypass contribution omitted in this simplified model.)"""
-        # TODO: Add bypass stream thrust contribution for turbofan
-        return self.core_mass_flow * self.specific_thrust
-
-    @Attribute
-    def fuel_flow_rate(self):
-        """Fuel flow rate [kg/s] — simplified: f * m_core.
-        f ≈ cp * (TET - T_compressor_exit) / LHV"""
-        return self.core_mass_flow * 1005.0 * (
-            self.engine_features["TET"] - 580.0
-        ) / 43.2e6
-
-    @Attribute
-    def sfc(self):
-        """Specific fuel consumption [kg/(N·s)] = fuel_flow / thrust."""
-        return self.fuel_flow_rate / max(self.net_thrust, 1.0)
-
-    @Attribute
-    def eta_thermal(self):
-        """Thermal efficiency [-] = net_power / heat_input."""
-        return (self.net_thrust * self.flight_velocity) / max(
-            self.fuel_flow_rate * 43.2e6, 1.0
-        )
-
-    @Attribute
-    def eta_propulsive(self):
-        """Propulsive efficiency [-] = 2 / (1 + V_e / V_0)."""
-        return 2.0 / (1.0 + self.exhaust_velocity / max(self.flight_velocity, 1.0))
-
-    @Attribute
-    def eta_overall(self):
-        """Overall efficiency [-] = eta_thermal * eta_propulsive."""
-        return self.eta_thermal * self.eta_propulsive
-
-    @Attribute
-    def preliminary_performance(self):
-        """Preliminary 1-D cycle performance summary dict."""
-        return {
-            "net_thrust_N": self.net_thrust,
-            "specific_thrust_Ns_kg": self.specific_thrust,
-            "SFC_kg_Ns": self.sfc,
-            "fuel_flow_kg_s": self.fuel_flow_rate,
-            "exhaust_velocity_m_s": self.exhaust_velocity,
-            "eta_thermal": self.eta_thermal,
-            "eta_propulsive": self.eta_propulsive,
-            "eta_overall": self.eta_overall,
-            "core_mass_flow_kg_s": self.core_mass_flow,
-            "bypass_mass_flow_kg_s": self.bypass_mass_flow,
-        }
-
     # ==================================================================
-    # @Part SLOTS — child components
+    # This were defined on a turbofan engine. Not all of them are useful,
+    # must be replaced with more high-fidelity attributes that may call
+    # high fidelity analysis
     # ==================================================================
+    #
+    # @Attribute
+    # def exhaust_velocity(self):
+    #     """Simplified hot-jet exhaust velocity [m/s].
+    #     V_e = sqrt(2 * cp * T_total_turbine_exit * (1 - (p_amb / p_total_exit)^((γ-1)/γ)))
+    #     """
+    #     return (2.0 * 1005.0 * 900.0 * (
+    #         1.0 - (101325.0 / self.thermodynamic_cycle.get(6, 120000.0)) ** 0.2857
+    #     )) ** 0.5
+    #
+    # @Attribute
+    # def specific_thrust(self):
+    #     """Specific thrust [N·s/kg] = V_exhaust - V_flight."""
+    #     return self.exhaust_velocity - self.flight_velocity
+    #
+    # @Attribute
+    # def net_thrust(self):
+    #     """Net thrust [N] = core_mass_flow * specific_thrust.
+    #     (Bypass contribution omitted in this simplified model.)"""
+    #     # TODO: Add bypass stream thrust contribution for turbofan
+    #     return self.core_mass_flow * self.specific_thrust
+    #
+    # @Attribute
+    # def fuel_flow_rate(self):
+    #     """Fuel flow rate [kg/s] — simplified: f * m_core.
+    #     f ≈ cp * (TET - T_compressor_exit) / LHV"""
+    #     return self.core_mass_flow * 1005.0 * (
+    #         self.engine_features["TET"] - 580.0
+    #     ) / 43.2e6
+    #
+    # @Attribute
+    # def sfc(self):
+    #     """Specific fuel consumption [kg/(N·s)] = fuel_flow / thrust."""
+    #     return self.fuel_flow_rate / max(self.net_thrust, 1.0)
+    #
+    # @Attribute
+    # def eta_thermal(self):
+    #     """Thermal efficiency [-] = net_power / heat_input."""
+    #     return (self.net_thrust * self.flight_velocity) / max(
+    #         self.fuel_flow_rate * 43.2e6, 1.0
+    #     )
+    #
+    # @Attribute
+    # def eta_propulsive(self):
+    #     """Propulsive efficiency [-] = 2 / (1 + V_e / V_0)."""
+    #     return 2.0 / (1.0 + self.exhaust_velocity / max(self.flight_velocity, 1.0))
+    #
+    # @Attribute
+    # def eta_overall(self):
+    #     """Overall efficiency [-] = eta_thermal * eta_propulsive."""
+    #     return self.eta_thermal * self.eta_propulsive
+    #
+    # @Attribute
+    # def preliminary_performance(self):
+    #     """Preliminary 1-D cycle performance summary dict."""
+    #     return {
+    #         "net_thrust_N": self.net_thrust,
+    #         "specific_thrust_Ns_kg": self.specific_thrust,
+    #         "SFC_kg_Ns": self.sfc,
+    #         "fuel_flow_kg_s": self.fuel_flow_rate,
+    #         "exhaust_velocity_m_s": self.exhaust_velocity,
+    #         "eta_thermal": self.eta_thermal,
+    #         "eta_propulsive": self.eta_propulsive,
+    #         "eta_overall": self.eta_overall,
+    #         "core_mass_flow_kg_s": self.core_mass_flow,
+    #         "bypass_mass_flow_kg_s": self.bypass_mass_flow,
+    #     }
+
+    # #: dict[int, float] — station-keyed total pressures [Pa] / temps [K]
+    # #:   keys = station numbers (2, 3, 4, 5, 6, …)
+    # #:   values = total pressure OR temperature at that station
+    # @Attribute
+    # def thermodynamic_cycle(self):
+    #     return {
+    #         2: 101325.0,  # Pa — fan face
+    #         3: 810600.0,  # Pa — compressor exit (OPR=8 example)
+    #         4: 810600.0,  # Pa — combustor exit  (isobaric)
+    #         5: 180000.0,  # Pa — turbine exit
+    #         6: 120000.0,  # Pa — nozzle inlet
+    #     }
 
     @Part
-    def engine_frame(self):
-        """Structural casing + inlet + nozzle."""
-        return EngineFrame(
-            inlet_inflow=self._inlet_flow_station,
-            nozzle_inflow=self._nozzle_inlet_flow_station,
-            inlet_length=self.inlet_length,
-            casing_length=self.casing_length,
-            nozzle_length=self.nozzle_length,
-            casing_inlet_wall_thickness=self.casing_wall_thickness,
-            casing_outlet_wall_thickness=self.casing_wall_thickness,
-            inlet_wall_thickness=self.casing_wall_thickness,
-            nozzle_wall_thickness=self.casing_wall_thickness,
-            sheet_thickness=self.sheet_thickness,
-            material_name=self.frame_material,
-            internal_profile=self.internal_profile,
-            label="engine_frame",
-        )
-
-    @Part
-    def combustor(self):
-        """Annular combustion chamber."""
-        return Combustor(
-            inflow_conditions=self._combustor_inlet_flow_station,
-            outlet_flow=self._combustor_outlet_flow_station,
-            station_out=4,
-            Mach_out=0.2,
-            internal_radius=self.combustor_internal_radius,
-            external_radius=self.combustor_external_radius,
-            length=self.combustor_length,
-            material_name=self.combustor_material,
-            # TODO: Verify x_offset integration with EngineFrame internal_profile
-            label="combustor",
-        )
+    def input_parser(self):
+        return InputParser(filepath=self.input_file)
 
     @Part
     def spool(self):
@@ -505,189 +639,161 @@ class AeroEngine(GeomBase):
         return Spool(
             design_radius=self.spool_design_radius,
             compressor_delta_h=self.compressor_delta_h,
-            compressor_n_stages=self.compressor_n_stages,
+            compressor_n_stages=min(self.compressor_n_stages, 6),
             turbine_n_stages=self.turbine_n_stages,
             shaft_rpm=self.shaft_rpm,
-            compressor_inflow=self._compressor_inlet_flow_station,
-            turbine_inflow=self._combustor_outlet_flow_station,
-            gap_length=self.spool_gap_length,
-            x_start=self.spool_x_start,
-            x_start_compressor=self.spool_x_start_compressor,
-            x_end=self.spool_x_end,
-            isos_efficiency=self.spool_isos_efficiency,
+            compressor_inflow=self.compressor_inflow,
+            turbine_inflow=self.turbine_inflow,
+            compressor_reaction_coeff=self.engine_features["C_reaction_coeff"],
+            turbine_reaction_coeff=self.engine_features["T_reaction_coeff"],
+            gap_length=self.combustor_length,
+            x_start=self.engine_geometry["inlet_length"] - self.engine_geometry["spool_tip_length"],
+            x_start_compressor=self.engine_geometry["inlet_length"],
+            x_end=self.engine_geometry["inlet_length"] + self.engine_geometry["spool_length"] -  self.engine_geometry["spool_tip_length"],
+            isos_efficiency=self.spool_mech_efficiency,
+            thrust_needed=self.engine_features["Thrust_required"],
             flight_velocity=self.flight_velocity,
+            show_compressor=self.show_compressor,
+            show_turbine=self.show_turbine,
             label="spool",
+        )
+
+    @Part
+    def combustor(self):
+        """Annular combustion chamber."""
+        return Combustor(
+            inflow_conditions=self.combustor_inflow,
+            outlet_flow=self.turbine_inflow,
+            station_out=4,
+            Mach_out=self.turbine_inflow.Mach,
+            internal_radius= self.spool.compressor_hub_out,
+            external_radius=self.spool.compressor_tip_radii[1],
+            length=self.combustor_length,
+            # TODO: verify combustor length convention with Architect
+            #       (currently = spool_length - spool_tip_length, i.e. the gap)
+            material_name="Inconel-718",
+            eta_comb=self.engine_features["CC_eta"],
+            LHV=self.engine_features["LHV"],
+            x_offset=self.spool.compressor_end_x,
+            label="combustor",
+        )
+
+    @Part
+    def engine_frame(self):
+        """Structural casing + inlet + nozzle."""
+        return EngineFrame(
+            inlet_inflow=self.inlet_inflow,
+            nozzle_inflow=self.nozzle_inflow,
+            inlet_length=self.engine_geometry["inlet_length"],
+            casing_length=self.casing_length,
+            nozzle_length=self.engine_geometry["nozzle_length"],
+            inlet_wall_thickness=self.inlet_wall_thickness,
+            casing_inlet_wall_thickness=self.engine_geometry["casing_wall_thickness"],
+            casing_outlet_wall_thickness=self.engine_geometry["casing_wall_thickness"],
+            nozzle_wall_thickness=self.nozzle_wall_thickness,
+            internal_profile=self.internal_profile,
+            label="engine_frame",
         )
 
     # ==================================================================
     # @action SLOTS — GUI buttons
     # ==================================================================
 
-    @action(label='Run CFD analysis')
-    def run_cfd_analysis(self):
-        """Trigger high-fidelity Multall CFD on both compressor and turbine.
-        Calls the spool's power_balance action which runs compressor CFD first,
-        then turbine CFD if the power check passes."""
-        # TODO: Verify spool.compressor.solver.run() path once MultallSolver
-        #       is fully integrated into the compressor/turbine children
-        print("[AeroEngine] Launching CFD analysis via spool power balance...")
-        self.spool.power_balance()
-        print("[AeroEngine] CFD analysis complete.")
+    # This methods mut be updated with the current notation
+    # +++ there must be a method called:
+    # satisfy power_balance that run the spool power balance and, if the power_balance requirement is not met,
+    # updates the turbomachinery geometries --> we need to see how
+
+    @action(label='Run CFD')
+    def run_cfd(self):
+        """Run CFD analysis on compressor and turbine in parallel."""
+        print("[AeroEngine] Starting parallel CFD analysis...")
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            future_comp = executor.submit(self.spool.compressor.multall_analysis)
+            future_turb = executor.submit(self.spool.turbine.multall_analysis)
+
+        try:
+            future_comp.result()
+        except Exception as e:
+            print(f"[AeroEngine] Compressor CFD failed: {e}")
+
+        try:
+            future_turb.result()
+        except Exception as e:
+            print(f"[AeroEngine] Turbine CFD failed: {e}")
+
+        self.spool._cfd_runs_counter += 1
+
+        print("=" * 50)
+        print("[AeroEngine] CFD RESULTS")
+        print("=" * 50)
+        comp_power = self.spool.compressor_power
+        turb_power = self.spool.power_estimated
+        delta_power = turb_power - comp_power
+        print(f"Compressor shaft power: {comp_power:.2f} W")
+        print(f"Turbine shaft power: {turb_power:.2f} W")
+        print(f"Power balance delta: {delta_power:.2f} W")
+        print("=" * 50)
 
     @action(label='Compute weights')
     def compute_weights(self):
         """Evaluate total_weight and log component breakdown."""
+        frame_w = self.engine_frame.weight
+        combustor_w = self.combustor.weight
+        compressor_w = self.spool.compressor.weight
+        turbine_w = self.spool.turbine.weight
+        spool_total = self.spool.total_weight
+        shaft_w = spool_total - compressor_w - turbine_w
+        total_w = self.total_weight
+
         print("=" * 50)
-        print("[AeroEngine] WEIGHT BREAKDOWN")
-        print("=" * 50)
-        print(f"  EngineFrame : {self.engine_frame.weight:.3f} kg")
-        print(f"  Combustor   : {self.combustor.weight:.3f} kg")
-        print(f"  Spool       : {self.spool.total_weight:.3f} kg")
-        print(f"  {'─' * 40}")
-        print(f"  TOTAL       : {self.total_weight:.3f} kg")
+        print(f"{'Component':<20} | {'Weight [kg]':>20}")
+        print("-" * 50)
+        print(f"{'EngineFrame':<20} | {frame_w:>20.3f}")
+        print(f"{'Combustor':<20} | {combustor_w:>20.3f}")
+        print(f"{'Compressor':<20} | {compressor_w:>20.3f}")
+        print(f"{'Turbine':<20} | {turbine_w:>20.3f}")
+        print(f"{'Shaft':<20} | {shaft_w:>20.3f}")
+        print("-" * 50)
+        print(f"{'TOTAL':<20} | {total_w:>20.3f}")
         print("=" * 50)
 
-    @action(label='Export report')
-    def export_report(self):
-        """Instantiate ReportWriter and export the full engine report."""
-        # TODO: Uncomment once ReportWriter module exists:
-        # writer = ReportWriter(
-        #     engine=self,
-        #     performance=self.preliminary_performance,
-        #     weight=self.total_weight,
-        # )
-        # writer.export()
-        print("[AeroEngine] export_report: ReportWriter not yet implemented.")
-        print("[AeroEngine] Preliminary performance summary:")
-        for key, val in self.preliminary_performance.items():
-            print(f"  {key}: {val:.4f}")
+    # @action(label='Export report')
+    # def export_report(self):
+    #     """Instantiate ReportWriter and export the full engine report."""
+    #     # TODO: Uncomment once ReportWriter module exists:
+    #     # writer = ReportWriter(
+    #     #     engine=self,
+    #     #     performance=self.preliminary_performance,
+    #     #     weight=self.total_weight,
+    #     # )
+    #     # writer.export()
+    #     print("[AeroEngine] export_report: ReportWriter not yet implemented.")
+    #     print("[AeroEngine] Preliminary performance summary:")
+    #     for key, val in self.preliminary_performance.items():
+    #         print(f"  {key}: {val:.4f}")
+
+    @action(label='Show Compressor')
+    def show_compressor_action(self):
+        """Show/render compressor blades in the 3D canvas."""
+        self.show_compressor = True
+
+    @action(label='Show Turbine')
+    def show_turbine_action(self):
+        """Show/render turbine blades in the 3D canvas."""
+        self.show_turbine = True
 
 
 # ======================================================================
 # Smoke test — instantiate with dummy inputs (no real .xlsx needed)
 # ======================================================================
+
 if __name__ == '__main__':
-
-    # ------------------------------------------------------------------
-    # Default FlowStations for a representative single-spool turbojet
-    # ------------------------------------------------------------------
-    station_1 = FlowStation(
-        station_number=1,
-        fluid_type="air",
-        p_total=101325.0,
-        T_total=288.15,
-        mass_flow=250.0,
-        Mach=0.78,
-    )
-
-    station_2 = FlowStation(
-        station_number=2,
-        fluid_type="air",
-        p_total=101325.0 * 0.98,
-        T_total=300.0,
-        mass_flow=250.0 / 6.0,
-        Mach=0.45,
-    )
-
-    station_3 = FlowStation(
-        station_number=3,
-        fluid_type="air",
-        p_total=810600.0,
-        T_total=580.0,
-        mass_flow=250.0 / 6.0,
-        Mach=0.3,
-    )
-
-    station_4 = FlowStation(
-        station_number=4,
-        fluid_type="fuel_gas",
-        p_total=810600.0,
-        T_total=1500.0,
-        mass_flow=250.0 / 6.0 * 1.02,
-        Mach=0.3,
-    )
-
-    station_6 = FlowStation(
-        station_number=6,
-        fluid_type="fuel_gas",
-        p_total=120000.0,
-        T_total=900.0,
-        mass_flow=250.0 / 6.0 * 1.02,
-        Mach=0.45,
-    )
-
-    # ------------------------------------------------------------------
-    # Instantiate AeroEngine
-    # ------------------------------------------------------------------
-    engine = AeroEngine(
-        input_file="",
-        engine_architecture="turbofan",
-        design_flight_conditions={
-            "altitude": 10668.0,
-            "Mach": 0.78,
-            "ISA_deviation": 0.0,
-        },
-        engine_features={
-            "BPR": 5.0,
-            "OPR": 30.0,
-            "TET": 1500.0,
-            "mass_flow": 250.0,
-        },
-        thermodynamic_cycle={
-            2: 101325.0 * 0.98,
-            3: 810600.0,
-            4: 810600.0,
-            5: 180000.0,
-            6: 120000.0,
-        },
-        inlet_flow=station_1,
-        compressor_inlet_flow=station_2,
-        turbine_inlet_flow=station_4,
-        nozzle_inlet_flow=station_6,
-        inlet_length=0.55,
-        casing_length=1.0,
-        nozzle_length=0.45,
-        combustor_internal_radius=0.15,
-        combustor_external_radius=0.30,
-        combustor_length=0.40,
-        spool_design_radius=0.20,
-        compressor_delta_h=150000.0,
-        compressor_n_stages=5,
-        turbine_n_stages=3,
-        shaft_rpm=12000.0,
-        spool_gap_length=0.25,
-        spool_isos_efficiency=0.90,
-        flight_velocity=250.0,
-        label="AeroEngine_HP",
-    )
-
-    # ------------------------------------------------------------------
-    # Print results
-    # ------------------------------------------------------------------
-    print("=" * 60)
-    print("AeroEngine SMOKE TEST")
-    print("=" * 60)
-
-    print("\n--- PRELIMINARY PERFORMANCE ---")
-    for k, v in engine.preliminary_performance.items():
-        print(f"  {k:30s}: {v:.4f}")
-
-    print("\n--- TOTAL WEIGHT ---")
-    # TODO: total_weight will fail if child .weight attributes
-    #       require geometry that isn't fully resolved in this smoke test.
-    #       Wrap in try/except for graceful degradation.
-    try:
-        print(f"  total_weight = {engine.total_weight:.3f} kg")
-    except Exception as e:
-        print(f"  total_weight could not be computed: {e}")
-
-    print("\n--- COMPONENT CHECK ---")
-    print(f"  engine_frame type : {type(engine.engine_frame).__name__}")
-    print(f"  combustor type    : {type(engine.combustor).__name__}")
-    print(f"  spool type        : {type(engine.spool).__name__}")
-
-    # ------------------------------------------------------------------
-    # Launch GUI
-    # ------------------------------------------------------------------
     from parapy.gui import display
-    display(engine, autodraw=True)
+
+    engine = AeroEngine(
+        work_dir="Multall/DesignExample",
+        label="AeroEngine_test",
+    )
+
+    display(engine)

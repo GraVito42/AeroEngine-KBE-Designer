@@ -60,6 +60,8 @@ class Spool(GeomBase):
 
     isos_efficiency = Input(0.90)      # Isentropic efficiency
     spool_index = Input(0)             # 0 = HP (innermost), 1 = IP, 2 = LP
+    show_compressor = Input(False)     # Defer compressor lofting by default
+    show_turbine = Input(False)        # Defer turbine lofting by default
     _cfd_runs_counter = Input(0)       # Internal counter to invalidate CFD-based attributes
 
     thrust_needed = Input(30000.0)      # Required engine thrust [N]
@@ -479,6 +481,7 @@ class Spool(GeomBase):
             axial_offset=self.x_start_compressor,
             label=f"C_{self.label}" if hasattr(self, 'label') else "C",
             enable_cad_chord_capping=True,
+            show_blades=self.show_compressor,
         )
 
     @Part
@@ -497,6 +500,7 @@ class Spool(GeomBase):
             axial_offset=self.turbine_start_x,
             label=f"T_{self.label}" if hasattr(self, 'label') else "T",
             enable_cad_chord_capping=True,
+            show_blades=self.show_turbine,
         )
 
     # ------------------------------------------------------------------

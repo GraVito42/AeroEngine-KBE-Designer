@@ -29,7 +29,7 @@ for parent in Path(__file__).resolve().parents:
 import math
 
 from parapy.core import Input, Attribute, Part
-from parapy.geom import GeomBase, RotatedShape, Vector, Point
+from parapy.geom import GeomBase, RotatedShape, Vector, Point, Compound
 from parapy.core import child
 
 from EngineCore.Turbomachinery.Blade import Blade
@@ -91,6 +91,9 @@ class Stage(GeomBase):
 
     preview_deflection = Input(0.0005)
     """Forwarded as mesh_deflection to LoftedSolid. Lower = finer tessellation."""
+
+    show_blades = Input(False)
+    """If False, the 3D blade geometries are hidden by default to keep load times fast."""
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -280,25 +283,27 @@ class Stage(GeomBase):
 
     @Part
     def rotor_blades(self):
-        """Full rotor row: N RotatedShape copies of rotor_master.body."""
-        return RotatedShape(
-            shape_in       = self.rotor_master.body,
-            rotation_point = Point(0.0, 0.0, 0.0),
-            vector         = Vector(1.0, 0.0, 0.0),
-            angle          = child.index * self.rotor_angle_step_rad,
-            quantify       = self.rotor_n_blades,
+        """Full rotor row: N rotated copies of rotor_master.body as a single Compound."""
+        return Compound(
+            built_from=[
+                self.rotor_master.body.rotated(Vector(1.0, 0.0, 0.0),
+                                               idx * self.rotor_angle_step_rad,
+                                               Point(0.0, 0.0, 0.0))
+                for idx in range(self.rotor_n_blades)
+            ] if self.show_blades else [],
             color          = self.rotor_color,
         )
 
     @Part
     def stator_blades(self):
-        """Full stator row: N RotatedShape copies of stator_master.body."""
-        return RotatedShape(
-            shape_in       = self.stator_master.body,
-            rotation_point = Point(0.0, 0.0, 0.0),
-            vector         = Vector(1.0, 0.0, 0.0),
-            angle          = child.index * self.stator_angle_step_rad,
-            quantify       = self.stator_n_blades,
+        """Full stator row: N rotated copies of stator_master.body as a single Compound."""
+        return Compound(
+            built_from=[
+                self.stator_master.body.rotated(Vector(1.0, 0.0, 0.0),
+                                                idx * self.stator_angle_step_rad,
+                                                Point(0.0, 0.0, 0.0))
+                for idx in range(self.stator_n_blades)
+            ] if self.show_blades else [],
             color          = self.stator_color,
         )
 
@@ -356,10 +361,9 @@ if __name__ == '__main__':
     print(f"        rotor master volume:         {vol:.4e} m^3")
 
     t4 = time.perf_counter()
-    _ = stage.rotor_blades[0]
-    _ = stage.rotor_blades[-1]
+    _ = stage.rotor_blades.faces
     t5 = time.perf_counter()
-    print(f"[BENCH] First + last RotatedShape:  {t5 - t4:.3f} s")
+    print(f"[BENCH] Compound evaluation:        {t5 - t4:.3f} s")
 
     print(f"rotor  blades   = {stage.rotor_n_blades}, "
           f"angle step = {stage.rotor_angle_step_deg:.2f} deg")
