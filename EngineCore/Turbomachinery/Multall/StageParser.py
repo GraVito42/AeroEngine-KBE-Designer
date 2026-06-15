@@ -48,6 +48,12 @@ _STACK = 'AXIAL & RADIAL COORDINATES ON THE SS AFTER STACKING'
 # Sections with fewer points than this on either surface are treated as degenerate.
 _MIN_PTS = 10
 
+# Normalised-chord overshoot thresholds. STAGEN profiles live in roughly
+# x in [0,1], y in [-0.5, 0.5]; anything beyond this is non-physical and
+# indicates a corrupted/garbage section.
+_MAX_ABS_X = 2.0
+_MAX_ABS_Y = 2.0
+
 # Fortran real/int token (incl. E-notation).
 _NUM = r'[-+]?\d*\.?\d+(?:[Ee][-+]?\d+)?'
 
@@ -143,35 +149,109 @@ class StageParser:
         return sections
 
     @staticmethod
-    def _repair_degenerate(sections):
-        """Replace degenerate sections (< _MIN_PTS points) by interpolation.
+    def _is_overshoot(sec):
+        """True if any (x,y) point in either surface exceeds the normalised
+        chord bounding box [-2,2]x[-2,2] (profiles nominally live in
+        [0,1] x [-0.5,0.5]). Indicates a corrupted/garbage STAGEN section."""
+        for surf in ('suction', 'pressure'):
+            for x, y in sec.get(surf, []):
+                if abs(x) > _MAX_ABS_X or abs(y) > _MAX_ABS_Y:
+                    return True
+        return False
 
-        Works in-place.  Interpolation is linear between the nearest valid
-        neighbours; if no valid neighbour exists, copies the one that does.
-        Prints a warning to stderr for each repaired section.
+    @staticmethod
+    def _segments_intersect(p1, p2, p3, p4):
+        """True if segment p1-p2 crosses segment p3-p4 (2D, proper crossing)."""
+        def cross(o, a, b):
+            return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+        d1 = cross(p3, p4, p1)
+        d2 = cross(p3, p4, p2)
+        d3 = cross(p1, p2, p3)
+        d4 = cross(p1, p2, p4)
+
+        if ((d1 > 0 > d2) or (d1 < 0 < d2)) and ((d3 > 0 > d4) or (d3 < 0 < d4)):
+            return True
+        return False
+
+    @staticmethod
+    def _is_self_intersecting(sec):
+        """Simple segment-pair test: does the suction polyline cross the
+        pressure polyline anywhere (excluding shared LE/TE endpoints)?
+
+        O(N*M) brute-force over consecutive-point segments; profile sections
+        have only a few dozen points so this is cheap.
+        """
+        suction = sec.get('suction', [])
+        pressure = sec.get('pressure', [])
+        if len(suction) < 2 or len(pressure) < 2:
+            return False
+
+        suc_segs = list(zip(suction[:-1], suction[1:]))
+        prs_segs = list(zip(pressure[:-1], pressure[1:]))
+
+        # Skip the first and last segment of each surface — these meet at the
+        # shared LE/TE points and a "touch" there is not a real crossing.
+        for i, (a, b) in enumerate(suc_segs):
+            if i == 0 or i == len(suc_segs) - 1:
+                continue
+            for j, (c, d) in enumerate(prs_segs):
+                if j == 0 or j == len(prs_segs) - 1:
+                    continue
+                if StageParser._segments_intersect(a, b, c, d):
+                    return True
+        return False
+
+    @staticmethod
+    def _repair_degenerate(sections):
+        """Replace degenerate sections by interpolation/neighbour-copy.
+
+        A section is degenerate if ANY of the following hold:
+          - either surface has < _MIN_PTS points (point-count check), or
+          - either surface contains a coordinate outside the normalised
+            chord bounding box (overshoot check, _is_overshoot), or
+          - the suction and pressure polylines cross each other
+            (self-intersection check, _is_self_intersecting).
+
+        Works in-place.  Repair is by nearest valid neighbour (copy); if no
+        valid neighbour exists, the section is left as-is.  Prints a warning
+        to stderr for each repaired section, identifying which check failed.
         """
         n = len(sections)
+
+        def _is_degenerate(sec):
+            reasons = []
+            if (len(sec['suction']) < _MIN_PTS
+                    or len(sec['pressure']) < _MIN_PTS):
+                reasons.append(
+                    f"point-count (suc={len(sec['suction'])}, "
+                    f"prs={len(sec['pressure'])}, min={_MIN_PTS})")
+            if StageParser._is_overshoot(sec):
+                reasons.append(
+                    f"overshoot (|x| or |y| > {_MAX_ABS_X})")
+            if StageParser._is_self_intersecting(sec):
+                reasons.append("self-intersection (suction/pressure cross)")
+            return reasons
+
         for idx in range(n):
             sec = sections[idx]
-            if (len(sec['suction']) >= _MIN_PTS
-                    and len(sec['pressure']) >= _MIN_PTS):
+            reasons = _is_degenerate(sec)
+            if not reasons:
                 continue  # healthy
 
             print(
-                f"StageParser WARNING: section {idx} is degenerate "
-                f"(suc={len(sec['suction'])}, prs={len(sec['pressure'])} points). "
-                f"Replacing by interpolation.",
+                f"StageParser WARNING: section {idx} is degenerate -- "
+                f"{'; '.join(reasons)}. Replacing by interpolation.",
                 file=sys.stderr
             )
 
-            # Find nearest valid neighbours.
-            prev_ok = next((j for j in range(idx-1, -1, -1)
-                            if len(sections[j]['suction']) >= _MIN_PTS), None)
-            next_ok = next((j for j in range(idx+1, n)
-                            if len(sections[j]['suction']) >= _MIN_PTS), None)
+            # Find nearest valid (non-degenerate by ALL checks) neighbours.
+            prev_ok = next((j for j in range(idx - 1, -1, -1)
+                            if not _is_degenerate(sections[j])), None)
+            next_ok = next((j for j in range(idx + 1, n)
+                            if not _is_degenerate(sections[j])), None)
 
             if prev_ok is None and next_ok is None:
-                # Cannot repair -- leave as-is.
                 print(
                     f"StageParser WARNING: no valid neighbour found for section {idx}.",
                     file=sys.stderr
@@ -183,8 +263,7 @@ class StageParser:
             elif next_ok is None:
                 donor = sections[prev_ok]
             else:
-                # Linear interpolation: weight towards nearest neighbour.
-                # For simplicity, just copy the closer one (index distance).
+                # Copy the closer neighbour (index distance).
                 donor = (sections[prev_ok]
                          if (idx - prev_ok) <= (next_ok - idx)
                          else sections[next_ok])
@@ -314,6 +393,105 @@ class StageParser:
             if result[i] is None:
                 result[i] = first_val + (last_val - first_val) * i / max(n - 1, 1)
         return result
+
+
+# ---------------------------------------------------------------------------
+# Module-level diagnostic — importable, no class instance needed
+# ---------------------------------------------------------------------------
+
+def validate_stage_data(stage_data):
+    """Diagnostic sanity-check on parsed/merged per-stage geometry dicts.
+
+    Plain module-level function (NOT a StageParser method) so it can be
+    imported directly and called from Turbomachine._build_stage_data_from()
+    without going through the ParaPy class.
+
+    Checks, per stage and per row ('rotor', 'stator'):
+      1. r_sections has >= 2 entries.
+      2. hub radius (r_sections[0]) < tip radius (r_sections[-1]).
+      3. x-coordinates of each blade surface (suction/pressure) are
+         monotonically increasing within every section.
+      4. (via StageParser._is_overshoot / _is_self_intersecting) flags any
+         section whose profile points fall outside the normalised chord
+         bounding box, or whose suction/pressure surfaces cross.
+
+    Degenerate findings are printed with a clear, identifiable message;
+    nothing is mutated and nothing raises -- this is read-only diagnostics.
+
+    Parameters
+    ----------
+    stage_data : list[dict]
+        Output of Turbomachine._build_stage_data_from() / MeangenParser.merge().
+
+    Returns
+    -------
+    bool
+        True if no issues were found, False if any check failed.
+    """
+    ok = True
+
+    for stage_idx, stage in enumerate(stage_data):
+        row_order = stage.get('_row_order', ['rotor', 'stator'])
+        for row_name in row_order:
+            row = stage.get(row_name)
+            if row is None:
+                print(f"[validate_stage_data] stage {stage_idx} '{row_name}': "
+                      f"row missing from stage dict.")
+                ok = False
+                continue
+
+            label = f"stage {stage_idx} {row_name}"
+            r_sections = row.get('r_sections', [])
+
+            # 1. r_sections length
+            if len(r_sections) < 2:
+                print(f"[validate_stage_data] {label}: r_sections has "
+                      f"{len(r_sections)} entries (need >= 2).")
+                ok = False
+                continue  # remaining radius checks need >=2 entries
+
+            # 2. hub < tip
+            r_hub, r_tip = r_sections[0], r_sections[-1]
+            if not (r_hub < r_tip):
+                print(f"[validate_stage_data] {label}: hub radius "
+                      f"({r_hub:.5f} m) is not < tip radius ({r_tip:.5f} m).")
+                ok = False
+
+            # 3. x-monotonicity per section, per surface
+            for surf_name in ('suction', 'pressure'):
+                sections = row.get(surf_name, [])
+                for sec_idx, pts in enumerate(sections):
+                    xs = [p[0] for p in pts]
+                    if any(xs[i + 1] < xs[i] for i in range(len(xs) - 1)):
+                        print(f"[validate_stage_data] {label} {surf_name} "
+                              f"section {sec_idx}: x-coordinates are not "
+                              f"monotonically increasing.")
+                        ok = False
+
+            # 4. overshoot / self-intersection, per section
+            suction = row.get('suction', [])
+            pressure = row.get('pressure', [])
+            n_sec = max(len(suction), len(pressure))
+            for sec_idx in range(n_sec):
+                sec = {
+                    'suction':  suction[sec_idx]  if sec_idx < len(suction)  else [],
+                    'pressure': pressure[sec_idx] if sec_idx < len(pressure) else [],
+                }
+                if StageParser._is_overshoot(sec):
+                    print(f"[validate_stage_data] {label} section {sec_idx}: "
+                          f"profile point exceeds bounding box "
+                          f"(|x| or |y| > {_MAX_ABS_X}) -- likely degenerate "
+                          f"STAGEN output.")
+                    ok = False
+                if StageParser._is_self_intersecting(sec):
+                    print(f"[validate_stage_data] {label} section {sec_idx}: "
+                          f"suction and pressure surfaces appear to cross "
+                          f"(self-intersecting profile).")
+                    ok = False
+
+    if ok:
+        print("[validate_stage_data] all checks passed.")
+    return ok
 
 
 # ---------------------------------------------------------------------------

@@ -109,8 +109,10 @@ class AeroEngine(GeomBase):
     # INPUT SLOTS — engine-level configuration
     # ==================================================================
 
-    #: str — path to the .xlsx input file (consumed by InputParser)
-    input_file = Input("")
+    @Input
+    def input_file(self):
+        return ""
+
     work_dir = Input("")
 
     @Input
@@ -639,13 +641,17 @@ class AeroEngine(GeomBase):
         return Spool(
             design_radius=self.spool_design_radius,
             compressor_delta_h=self.compressor_delta_h,
-            compressor_n_stages=min(self.compressor_n_stages, 6),
+            compressor_n_stages=self.compressor_n_stages,
             turbine_n_stages=self.turbine_n_stages,
             shaft_rpm=self.shaft_rpm,
             compressor_inflow=self.compressor_inflow,
             turbine_inflow=self.turbine_inflow,
             compressor_reaction_coeff=self.engine_features["C_reaction_coeff"],
             turbine_reaction_coeff=self.engine_features["T_reaction_coeff"],
+            compressor_stator_material = self.engine_materials["C_stator"],
+            compressor_rotor_material=self.engine_materials["C_rotor"],
+            turbine_stator_material=self.engine_materials["T_stator"],
+            turbine_rotor_material=self.engine_materials["T_rotor"],
             gap_length=self.combustor_length,
             x_start=self.engine_geometry["inlet_length"] - self.engine_geometry["spool_tip_length"],
             x_start_compressor=self.engine_geometry["inlet_length"],
@@ -671,7 +677,7 @@ class AeroEngine(GeomBase):
             length=self.combustor_length,
             # TODO: verify combustor length convention with Architect
             #       (currently = spool_length - spool_tip_length, i.e. the gap)
-            material_name="Inconel-718",
+            material_name=self.engine_materials["combustor"],
             eta_comb=self.engine_features["CC_eta"],
             LHV=self.engine_features["LHV"],
             x_offset=self.spool.compressor_end_x,
@@ -692,6 +698,7 @@ class AeroEngine(GeomBase):
             casing_outlet_wall_thickness=self.engine_geometry["casing_wall_thickness"],
             nozzle_wall_thickness=self.nozzle_wall_thickness,
             internal_profile=self.internal_profile,
+            material_name=self.engine_materials["casing"],
             label="engine_frame",
         )
 

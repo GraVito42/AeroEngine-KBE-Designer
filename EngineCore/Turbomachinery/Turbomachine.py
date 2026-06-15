@@ -46,7 +46,7 @@ from EngineCore.Material import Material
 from EngineCore.Turbomachinery.Multall.MultallSolver import MultallSolver
 
 from EngineCore.Turbomachinery.Multall.MeangenParser import MeangenParser
-from EngineCore.Turbomachinery.Multall.StageParser import StageParser
+from EngineCore.Turbomachinery.Multall.StageParser import StageParser, validate_stage_data
 from EngineCore.Turbomachinery.plot_blade_profile import plot_blade_profiles
 
 
@@ -435,6 +435,7 @@ class Turbomachine(EngineComponent, GeomBase):
                                    n_sections=n_sections,
                                    machine_type=self.machine_type)
         merged = MeangenParser.merge(stages, meagen_rows)
+        validate_stage_data(merged)
         self._cap_blade_rows_aspect_ratio(merged)
         for i, st in enumerate(merged):
             rc = sum(st['rotor']['chords']) / len(st['rotor']['chords'])

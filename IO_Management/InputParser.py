@@ -567,6 +567,17 @@ class InputParser(Base):
             # Save the newly entered values to the Excel file
             self._save_data(gui_filepath, flight, features, geometry, materials)
 
+            # Update parser's own filepath
+            self.filepath = gui_filepath
+
+            # If parent exists, propagate the input_file change to parent
+            if hasattr(self, "parent") and self.parent is not None:
+                if hasattr(self.parent, "input_file"):
+                    try:
+                        self.parent.input_file = gui_filepath
+                    except Exception as e:
+                        print(f"[InputParser] Warning: failed to set parent input_file: {e}")
+
             # Store the result to return
             gui_result[0] = (gui_filepath, flight, features, geometry, materials)
             root.destroy()
