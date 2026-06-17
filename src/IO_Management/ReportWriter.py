@@ -11,7 +11,7 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import cm
 from reportlab.platypus import (
     SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
-    PageBreak, Image as RLImage,
+    PageBreak, Image as RLImage, KeepTogether
 )
 from reportlab.lib import colors
 
@@ -347,16 +347,17 @@ class ReportWriter(Base):
         # ---- Section 1: Input traceability ----
         story.append(Paragraph("1. Input Parameters", s_h1))
         for label, data in (
-            ("1.1 Engine Features",        self.engine_features),
-            ("1.2 Engine Geometry Inputs", self.engine_geometry),
-            ("1.3 Material Selections",    self.engine_materials),
+                ("1.1 Engine Features", self.engine_features),
+                ("1.2 Engine Geometry Inputs", self.engine_geometry),
+                ("1.3 Material Selections", self.engine_materials),
         ):
-            story.append(Paragraph(label, s_h2))
-            story.append(
+            block = [
+                Paragraph(label, s_h2),
                 _make_table(data) if data
-                else Paragraph("No data provided.", styles["Normal"])
-            )
-            story.append(Spacer(1, 0.3 * cm))
+                else Paragraph("No data provided.", styles["Normal"]),
+                Spacer(1, 0.3 * cm),
+            ]
+            story.append(KeepTogether(block))
 
         # ---- Section 2: Performance summary ----
         story.append(Paragraph("2. Performance Summary", s_h1))
@@ -404,7 +405,6 @@ class ReportWriter(Base):
         )
 
         # ---- Appendix D: T-S diagram ----
-        story.append(PageBreak())
         story.append(Paragraph("Appendix D — Thermodynamic Cycle (T-S Diagram)", s_h1))
         story += _insert_image(
             self.ts_diagram_path,

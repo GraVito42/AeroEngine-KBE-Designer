@@ -36,6 +36,7 @@ Blade-off containment (CS-E §25.903(d)):
 # Ensure project root is in sys.path when running this file directly
 import sys
 from pathlib import Path
+
 for parent in Path(__file__).resolve().parents:
     if (parent / "EngineCore").exists() and (parent / "Thermodynamics").exists():
         if str(parent) not in sys.path:
@@ -45,7 +46,8 @@ for parent in Path(__file__).resolve().parents:
 import math
 
 from parapy.core import Input, Attribute, Part, action
-from parapy.geom import Point, FittedCurve, XOY, rotate, Polygon, ComposedCurve, BSplineCurve, Polyline, LineSegment, RevolvedSolid
+from parapy.geom import Point, FittedCurve, XOY, rotate, Polygon, ComposedCurve, BSplineCurve, Polyline, LineSegment, \
+    RevolvedSolid
 
 from Thermodynamics.FlowStation import FlowStation
 from EngineCore.Ducts.Duct import Duct
@@ -227,40 +229,40 @@ class EngineFrame(Duct):
     def inlet_duct(self):
         """Inlet end-cap — drives front lip geometry and inlet radii."""
         return Inlet(
-            r_outlet_inner        = self.resolved_internal_profile[0][1],
-            x_offset              = 0,
-            inflow_conditions     = self.inlet_inflow,
-            isos_efficiency       = self.inlet_isos_efficiency,
-            Mach_out              = self.inlet_Mach_out,
-            station_out           = 2,
-            pressure_ratio        = self.inlet_pressure_ratio,
-            lip_profile_type      = self.inlet_lip_profile,
-            lip_radius_ratio      = self.inlet_lip_radius_ratio,
-            sheet_thickness       = self.sheet_thickness,
-            length                = self.inlet_length,
-            material_name         = self.material_name,
-            wall_thickness_inlet  = self.inlet_wall_thickness,
-            wall_thickness_outlet = self.casing_inlet_wall_thickness,
-            hidden                = True,
+            r_outlet_inner=self.resolved_internal_profile[0][1],
+            x_offset=0,
+            inflow_conditions=self.inlet_inflow,
+            isos_efficiency=self.inlet_isos_efficiency,
+            Mach_out=self.inlet_Mach_out,
+            station_out=2,
+            pressure_ratio=self.inlet_pressure_ratio,
+            lip_profile_type=self.inlet_lip_profile,
+            lip_radius_ratio=self.inlet_lip_radius_ratio,
+            sheet_thickness=self.sheet_thickness,
+            length=self.inlet_length,
+            material_name=self.material_name,
+            wall_thickness_inlet=self.inlet_wall_thickness,
+            wall_thickness_outlet=self.casing_inlet_wall_thickness,
+            hidden=True,
         )
 
     @Part
     def nozzle_duct(self):
         """Nozzle end-cap — drives rear geometry and nozzle radii."""
         return Nozzle(
-            r_inlet_inner         = self.resolved_internal_profile[-1][1],
-            x_offset              = self.inlet_length + self.casing_length,
-            inflow_conditions     = self.nozzle_inflow,
-            isos_efficiency       = self.nozzle_isos_efficiency,
-            Mach_out              = self.nozzle_Mach_out,
-            station_out           = 7,
-            pressure_ratio        = self.nozzle_pressure_ratio,
-            p_ambient             = self.p_ambient,
-            length                = self.nozzle_length,
-            material_name         = self.material_name,
-            wall_thickness_inlet  = self.casing_outlet_wall_thickness,
-            wall_thickness_outlet = self.nozzle_wall_thickness,
-            hidden                = True,
+            r_inlet_inner=self.resolved_internal_profile[-1][1],
+            x_offset=self.inlet_length + self.casing_length,
+            inflow_conditions=self.nozzle_inflow,
+            isos_efficiency=self.nozzle_isos_efficiency,
+            Mach_out=self.nozzle_Mach_out,
+            station_out=7,
+            pressure_ratio=self.nozzle_pressure_ratio,
+            p_ambient=self.p_ambient,
+            length=self.nozzle_length,
+            material_name=self.material_name,
+            wall_thickness_inlet=self.casing_outlet_wall_thickness,
+            wall_thickness_outlet=self.nozzle_wall_thickness,
+            hidden=True,
         )
 
     # ------------------------------------------------------------------
@@ -460,9 +462,14 @@ class EngineFrame(Duct):
                 list(reversed(self.inlet_inner))  # highlight → outlet_inner (increasing x)
                 + [Point(x, r, 0.0) for x, r in self.resolved_internal_profile]  # internal (increasing x)
                 + [self.nozzle_duct.profile_points[0]]  # nozzle inner inlet
-                + [self.nozzle_duct.profile_points[-1]
-                   if not self.nozzle_duct.is_convergent_divergent
-                   else self.nozzle_duct.profile_points[3]]  # nozzle inner outlet
+                + (
+                    # C-D: inner wall converges to throat [4] then diverges to outlet [3]
+                    [self.nozzle_duct.profile_points[4],  # throat (inner)
+                     self.nozzle_duct.profile_points[3]]  # nozzle inner outlet
+                    if self.nozzle_duct.is_convergent_divergent
+                    # Convergent: straight inner inlet -> outlet
+                    else [self.nozzle_duct.profile_points[-1]]  # nozzle inner outlet
+                )
                 + [self.nozzle_duct.profile_points[2]]  # nozzle outer outlet
                 + [self.nozzle_duct.profile_points[1]]  # nozzle outer inlet
                 + list(reversed(self.outer_casing_points))  # outer casing (decreasing x)
@@ -482,18 +489,18 @@ class EngineFrame(Duct):
     def curve_internal(self):
         return BSplineCurve(
             control_points=(
-                [Point(self.inlet_length,
-                       self.resolved_internal_profile[0][1], 0.0)]
-                + [Point(x, r, 0.0)
-                   for x, r in self.resolved_internal_profile]
-                + [self.nozzle_duct.profile_points[0]]
+                    [Point(self.inlet_length,
+                           self.resolved_internal_profile[0][1], 0.0)]
+                    + [Point(x, r, 0.0)
+                       for x, r in self.resolved_internal_profile]
+                    + [self.nozzle_duct.profile_points[0]]
             ) if self.resolved_internal_profile else (
-                [Point(self.inlet_length, 0.1, 0.0)] * 2
+                    [Point(self.inlet_length, 0.1, 0.0)] * 2
             ),
             degree=1,
             hidden=True,
         )
-    
+
     @Part
     def curve_outer_casing(self):
         """
@@ -564,6 +571,7 @@ class EngineFrame(Duct):
             color=self.material.color,
             hidden=not self.show_geometry or not self.show_section,
         )
+
     # ------------------------------------------------------------------
     # Blade-off containment analysis
     # ------------------------------------------------------------------
@@ -575,9 +583,9 @@ class EngineFrame(Duct):
         Approximated as the lateral area of a cylinder at the mean inner radius.
         """
         return (
-            2.0 * math.pi
-            * (self.inlet_duct.r_outlet_inner + self.nozzle_duct.r_inlet_inner) / 2.0
-            * self.casing_length
+                2.0 * math.pi
+                * (self.inlet_duct.r_outlet_inner + self.nozzle_duct.r_inlet_inner) / 2.0
+                * self.casing_length
         )
 
     @Attribute
@@ -587,8 +595,9 @@ class EngineFrame(Duct):
         E_k = 0.5 * m * v_tip^2 + 0.5 * I * omega^2
         """
         return (
-            0.5 * self.blade_properties["blade_mass"] * (self.blade_properties["blade_tip_radius"] * self.blade_properties["omega"]) ** 2
-            + 0.5 * self.blade_properties["blade_inertia"] * self.blade_properties["omega"] ** 2
+                0.5 * self.blade_properties["blade_mass"] * (
+                    self.blade_properties["blade_tip_radius"] * self.blade_properties["omega"]) ** 2
+                + 0.5 * self.blade_properties["blade_inertia"] * self.blade_properties["omega"] ** 2
         )
 
     @Attribute
@@ -599,10 +608,10 @@ class EngineFrame(Duct):
         sigma_avg = (yield_stress + ult_strength) / 2  (trapezoidal sigma-eps rule)
         """
         return (
-            (self.material.yield_stress + self.material.ultimate_tensile_strength) / 2.0
-            * self.material.fracture_strain
-            * self.mean_area_inner
-            * self.sheet_thickness
+                (self.material.yield_stress + self.material.ultimate_tensile_strength) / 2.0
+                * self.material.fracture_strain
+                * self.mean_area_inner
+                * self.sheet_thickness
         )
 
     def is_contained(self):
@@ -617,8 +626,8 @@ class EngineFrame(Duct):
           <= 0 →  containment failure
         """
         return (
-            (self.strain_energy_casing - self.kinetic_energy_blade_off * self.safety_factor)
-            / (self.kinetic_energy_blade_off * self.safety_factor)
+                (self.strain_energy_casing - self.kinetic_energy_blade_off * self.safety_factor)
+                / (self.kinetic_energy_blade_off * self.safety_factor)
         )
 
     @Attribute
@@ -628,14 +637,14 @@ class EngineFrame(Duct):
         Derived by inverting strain_energy_casing >= E_k * SF * (1 + margin_target).
         """
         return (
-            self.kinetic_energy_blade_off
-            * self.safety_factor
-            * (1.0 + self.containment_margin_target)
-            / (
-                (self.material.yield_stress + self.material.ultimate_tensile_strength) / 2.0
-                * self.material.fracture_strain
-                * self.mean_area_inner
-            )
+                self.kinetic_energy_blade_off
+                * self.safety_factor
+                * (1.0 + self.containment_margin_target)
+                / (
+                        (self.material.yield_stress + self.material.ultimate_tensile_strength) / 2.0
+                        * self.material.fracture_strain
+                        * self.mean_area_inner
+                )
         )
 
     @action
@@ -646,11 +655,10 @@ class EngineFrame(Duct):
         """
         if self.sheet_thickness_required < 0.0005:
             print("[EngineFrame] WARNING: containment-required sheet_thickness "
-                  f"({self.sheet_thickness_required*1000:.2f} mm) is below "
+                  f"({self.sheet_thickness_required * 1000:.2f} mm) is below "
                   "schema minimum of 0.5 mm — clamped to 0.5 mm.")
         self.sheet_thickness = max(self.sheet_thickness_required, 0.0005)
         return self.sheet_thickness
-
 
     # ------------------------------------------------------------------
     # Validation
@@ -744,15 +752,17 @@ class EngineFrame(Duct):
         for i in range(len(curves) - 1):
             end_pt = curves[i].end
             start_pt = curves[i + 1].start
-            gap = ((end_pt.x - start_pt.x)**2 +
-                   (end_pt.y - start_pt.y)**2 +
-                   (end_pt.z - start_pt.z)**2) ** 0.5
+            gap = ((end_pt.x - start_pt.x) ** 2 +
+                   (end_pt.y - start_pt.y) ** 2 +
+                   (end_pt.z - start_pt.z) ** 2) ** 0.5
             status = "OK" if gap < 1e-6 else "MISMATCH"
-            print(f"  [{status}] curves[{i}]->[{i+1}]: gap = {gap:.2e} m")
+            print(f"  [{status}] curves[{i}]->[{i + 1}]: gap = {gap:.2e} m")
 
     # =============================================================================
     # Smoke-test
     # =============================================================================
+
+
 if __name__ == "__main__":
 
     station_1 = FlowStation(
@@ -849,7 +859,6 @@ if __name__ == "__main__":
         ],
     )
 
-
     # ------------------------------------------------------------------
     # Case 3 — containment failure (sheet too thin)
     # ------------------------------------------------------------------
@@ -922,5 +931,6 @@ if __name__ == "__main__":
         print()
 
     import parapy.gui as gui
+
     gui.display(frame_ok, view='iso', autodraw=True)
     frame_ok.debug_wall_profile_gaps()

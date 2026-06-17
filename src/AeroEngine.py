@@ -88,13 +88,13 @@ from EngineCore.Turbomachinery.MultallUtilities.MultallSolver import parse_shaft
 
 
 DEFAULT_FLIGHT_CONDITIONS = {
-    "altitude": 10668.0,       # m   — cruise FL350
+    "altitude": 10668.0,       # m   — cruise altitude
     "Mach": 0.78,              # -   — cruise Mach
-    "ISA_deviation": 0.0,      # K   — standard day
+    "ISA_deviation": 0.0,      # K   — standard day (temperature deviation)
 }
 
 DEFAULT_ENGINE_FEATURES = {
-    "IPR":  0.99,              # -   — inlet pressure recovery (tipical cruise condition)
+    "IPR":  0.99,              # -   — inlet pressure recovery (typical cruise condition)
     "CPR": 30.0,               # -   — compressor pressure ratio
     "CCPR": 0.96,              # -   — combustor pressure ratio
     "TPR": 0.03,               # -   — turbine pressure ratio
@@ -212,10 +212,11 @@ class AeroEngine(GeomBase):
 
     @action(label="Configure Inputs")
     def configure(self):
-        """Pre-launch: open GUI, validate, write xlsx, update input_file."""
+        """Pre-launch: open GUI, validate, write xlsx, update input_file and work_dir."""
         result = self.input_parser.launch_gui(filepath=self.input_file or None)
         if result is not None:
             self.input_file = result[0]
+            self.work_dir = result[1]
         return self
 
     #----------------------------------------------------------------------
@@ -471,8 +472,8 @@ class AeroEngine(GeomBase):
             isos_efficiency=self.engine_features["C_eta"],
             working_directory=aux_work_dir,
         )
+
         comp_stages = compressor_aux.stage_data  # triggers meangen + stagen
-        # TODO: verify row/section index convention with Architect
         hub_radius_compressor_exit = comp_stages[-1]["stator"]["r_sections"][0]
         tip_radius_compressor_exit = comp_stages[-1]["stator"]["r_sections"][-1]
         A_combustor = math.pi * (
@@ -1364,9 +1365,9 @@ class AeroEngine(GeomBase):
         labels = {
             2: "2 (Comp. inlet)",
             3: "3 (Comp. exit)",
-            4: "4 (TIT)",
-            5: "5 (Turb. exit)",
-            8: "8 (Nozzle exit)"
+            4: "4 (Turbine inlet)",
+            5: "5 (Nozzle inlet)",
+            8: None
         }
 
         s_vals = []
@@ -1386,8 +1387,10 @@ class AeroEngine(GeomBase):
         ax.plot(s_vals, T_vals, 'o-', color='crimson', linewidth=2)
         for i, station in enumerate(stations):
             label = labels[station]
-            ax.annotate(label, xy=(s_vals[i], T_vals[i]), xytext=(5, 5), textcoords='offset points', fontsize=8)
-
+            if not label:
+                continue
+            ax.annotate(label, xy=(s_vals[i], T_vals[i]),
+                        xytext=(8, 8), textcoords='offset points', fontsize=8)
         ax.set_xlabel("Specific entropy s [J/kg/K]")
         ax.set_ylabel("Total temperature T [K]")
         ax.set_title("T-S Thermodynamic Cycle Diagram")

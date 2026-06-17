@@ -537,7 +537,7 @@ class InputParser(Base):
             print("[InputParser] Re-opening UI for correction...")
             self._pending_l2_errors = level2
 
-        return (self.filepath, flight, features, geometry, materials)
+        return (self.filepath, self.work_dir, flight, features, geometry, materials)
 
     def _run_tkinter_ui(self):
         import tkinter as tk
