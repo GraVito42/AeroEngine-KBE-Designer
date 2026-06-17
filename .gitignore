@@ -1,3 +1,4 @@
-EngineCore/Turbomachinery/Multall/PostPy/*.dat
-EngineCore/Turbomachinery/Multall/PostPy/flow_out
-EngineCore/Turbomachinery/Multall/DesignExample/flow_out
+design/*/
+!design/templates/
+validation/
+softwares/Multall/DesignExample/
