@@ -104,8 +104,6 @@ class Inlet(Duct):
         """
         Highlight (leading-edge tip) radius [m].
         Placed midway between throat (r_inlet_inner) and cowl (r_inlet_outer).
-        # TODO [Architect]: confirm highlight should sit at the mid-radius,
-        #   or expose it as an explicit Input if the design dictates otherwise.
         """
         return 0.5 * (self.r_inlet_inner + self.r_inlet_outer)
 

@@ -105,8 +105,7 @@ class Turbomachine(EngineComponent, GeomBase):
     @Input
     def V_ax(self):
         """Axial (meridional) flow velocity [m/s].
-        Default: the inlet absolute velocity, assuming axial inflow (no swirl).
-        # TODO: if the stage carries inlet swirl, pass V_ax explicitly."""
+        Default: the inlet absolute velocity, assuming axial inflow (no swirl)."""
         return self.inflow_conditions.v
 
     @Input
@@ -168,11 +167,6 @@ class Turbomachine(EngineComponent, GeomBase):
         Axial NORMAL-stage relation (constant V_ax, mean radius):
             Lambda = 1 - psi/2 - phi * tan(alpha1)
         Use this only when alpha1 is known; otherwise `reaction` is a free input.
-
-        # TODO: this is the COMPRESSOR-convention form. Confirm the turbine
-        #       sign/station convention with the Architect before relying on it
-        #       (Turbine numbers stations stator-LE -> rotor-TE, so alpha1 is the
-        #       stator-exit angle and the sign of the psi term may flip).
         """
         return 1.0 - self.loading_coeff / 2.0 \
             - self.flow_coeff * math.tan(math.radians(alpha1_deg))
@@ -607,12 +601,7 @@ class Turbomachine(EngineComponent, GeomBase):
 
     @action(label='Run Multall CFD analysis')
     def multall_analysis(self):
-        """GUI button: run the 3D Multall CFD and refresh the model.
-
-        TODO #2: parse self.solver.flow_out_path for refined cross-sectional
-        areas / efficiencies and override the inherited EngineComponent inputs
-        so the geometry updates. Hand refined power balance back to parent Spool.
-        """
+        """GUI button: run the 3D Multall CFD and refresh the model."""
         self.solver.run_cfd()
 
     @action(label='Plot blade profiles')

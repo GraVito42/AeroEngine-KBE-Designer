@@ -220,14 +220,30 @@ class TurbojetSimplified(Base):
         return self.m_f / self.net_thrust
 
     @Attribute
+    def v_eff(self):
+        """Effective jet velocity [m/s] (SAE/lecture convention):
+        v_eff = gross_thrust / m_g, so that F_N = m_g*v_eff - m_0*v0.
+        For a perfectly-expanded nozzle v_eff == v8; when the nozzle is choked
+        it folds the pressure-thrust term (p8-p0)*A8 back into an equivalent
+        velocity, which is the velocity the thermal/propulsive efficiency
+        definitions require for energy/momentum consistency with net_thrust."""
+        return self.gross_thrust / self.m_g
+
+    @Attribute
     def thermal_efficiency(self):
-        return (0.5 * (self.m_g * self.v8 ** 2 - self.mass_flow * self.v0 ** 2)) / (
+        """Thermal (cycle) efficiency [-]: jet kinetic-energy rise per unit fuel
+        chemical power. Uses v_eff (not v8) so the choked-nozzle pressure thrust
+        is accounted for consistently with net_thrust."""
+        return (0.5 * (self.m_g * self.v_eff ** 2 - self.mass_flow * self.v0 ** 2)) / (
             self.m_f * self.LHV)
 
     @Attribute
     def propulsive_efficiency(self):
+        """Froude efficiency [-]: thrust power / propulsion (kinetic-energy) power.
+        Uses v_eff (not v8); with overall_efficiency this now satisfies
+        eta_th * eta_prop = eta_ov exactly, including the choked case."""
         return (self.net_thrust * self.v0) / (
-            0.5 * (self.m_g * self.v8 ** 2 - self.mass_flow * self.v0 ** 2))
+            0.5 * (self.m_g * self.v_eff ** 2 - self.mass_flow * self.v0 ** 2))
 
     @Attribute
     def overall_efficiency(self):
@@ -267,12 +283,21 @@ if __name__ == '__main__':
     print(f"resolved mass_flow    : {engine.mass_flow:.3f} kg/s")
     print(f"net thrust (inverse)  : {engine.thrust / 1e3:.3f} kN")
     print(f"nozzle choked         : {engine.is_nozzle_choked}")
+    print(f"v8 (exit static)      : {engine.v8:.2f} m/s")
+    print(f"v_eff (effective jet) : {engine.v_eff:.2f} m/s")
     print(f"TSFC                  : {engine.TSFC * 1e6:.2f} mg/(N*s)")
     print(f"thermal efficiency    : {engine.thermal_efficiency:.4f}")
     print(f"propulsive efficiency : {engine.propulsive_efficiency:.4f}")
     print(f"overall efficiency    : {engine.overall_efficiency:.4f}")
 
+    # Consistency check: thermal * propulsive must equal overall (now exact with v_eff).
+    eta_product = engine.thermal_efficiency * engine.propulsive_efficiency
+    residual = eta_product - engine.overall_efficiency
+    print(f"\neta_th * eta_prop     : {eta_product:.6f} "
+          f"(vs eta_ov {engine.overall_efficiency:.6f}, residual {residual:+.2e})")
+    assert abs(residual) < 1e-6, "eta_th * eta_prop != eta_ov — efficiency definitions inconsistent"
+
     # Round-trip check: forward evaluation at the resolved mass flow -> target_thrust.
     fwd = engine.evaluate_forward(engine.mass_flow)
-    print(f"\nforward check         : {fwd / 1e3:.3f} kN "
+    print(f"forward check         : {fwd / 1e3:.3f} kN "
           f"(residual {fwd - engine.target_thrust:+.3e} N)")

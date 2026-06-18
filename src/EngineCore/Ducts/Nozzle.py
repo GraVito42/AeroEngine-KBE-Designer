@@ -58,6 +58,23 @@ class Nozzle(Duct):
     #: [Pa]  Ambient static pressure — reference for thrust coefficient.
     p_ambient: float = Input(101325.0)
 
+    # ------------------------------------------------------------------
+    # Exit Mach — driven by the throat analysis (override Duct/EngineComponent)
+    # ------------------------------------------------------------------
+
+    @Input
+    def Mach_out(self):
+        """Nozzle exit Mach number.
+
+        Default: the ideally-expanded exit Mach from the throat analysis
+        (Mach_out_design), so the exit condition is forced consistent with a
+        perfectly-expanded nozzle (p_exit = p_ambient). This replaces the
+        inherited EngineComponent.Mach_out Input so the design Mach is no
+        longer a free parameter that can drift from the throat solution.
+        Still overridable by a parent assembly if an off-design exit Mach is
+        explicitly required."""
+        return self.Mach_out_design
+
     @Input
     #: bool  True → convergent-divergent geometry and supersonic exit logic.
     def is_convergent_divergent(self):

@@ -201,7 +201,6 @@ class MeangenParser:
         r_sections = [float(c[2]) for c in le_te_lines]             # LE_r
 
         # Stagger per section = mean of inlet/exit metal angles.
-        # TODO (verify in GUI): sign convention vs Blade.pitch_angles twist.
         pitch_angles = [MeangenParser._stagger(u, d)
                         for u, d in zip(betup, betdwn)]
 

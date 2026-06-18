@@ -56,9 +56,6 @@ class Duct(EngineComponent):
     # Inputs
     # ------------------------------------------------------------------
 
-    #: [-]      Design Mach number for the duct
-    Mach_design: float = Input(0.5)
-
     #: [m]      Sheet-metal wallt thickness for the surface-based weight model
     sheet_thickness: float = Input(0.003)
 

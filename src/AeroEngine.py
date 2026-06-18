@@ -509,8 +509,6 @@ class AeroEngine(GeomBase):
         )
         turb_stages = turbine_aux.stage_data  # triggers meangen + stagen
 
-        # TASK 2 — turbine inlet = first stage stator LE
-        # TODO: verify row/section index convention with Architect
         hub_radius_turbine_inlet = turb_stages[0]["stator"]["r_sections"][0]
         tip_radius_turbine_inlet = turb_stages[0]["stator"]["r_sections"][-1]
         A_turbine = math.pi * (
@@ -524,7 +522,7 @@ class AeroEngine(GeomBase):
             fluid_type="fuel_gas",
         )
 
-        # TASK 3 — nozzle inlet = turbine exit = last stage rotor TE
+
         # Totals from station5 (turbine exit / nozzle inlet, not nozzle throat)
         hub_radius_turbine_exit = turb_stages[-1]["rotor"]["r_sections"][0]
         tip_radius_turbine_exit = turb_stages[-1]["rotor"]["r_sections"][-1]
@@ -643,7 +641,6 @@ class AeroEngine(GeomBase):
     def total_weight(self):
         """Sum of child component weights [kg].
         engine_frame.weight + combustor.weight + spool.total_weight"""
-        # TODO: Verify attribute names match child implementations once all wired
         return self.engine_frame.weight + self.combustor.weight + self.spool.total_weight
 
     # ==================================================================
@@ -764,9 +761,6 @@ class AeroEngine(GeomBase):
             return None
         
         try:
-            # Copy Components directory from PostPy to work_dir if it's missing.
-            # TODO: cache _read_postpy_machine result at Python level if copy overhead
-            #       becomes measurable (key by work_dir path).
             components_src = str(Path(__file__).resolve().parent.parent / "validation" / "PostPy" / "Components")
             components_dst = os.path.join(work_dir, "Components")
             if not os.path.exists(components_dst) and os.path.exists(components_src):
@@ -834,12 +828,8 @@ class AeroEngine(GeomBase):
 
     @Attribute
     def performance_summary(self):
-        """Preliminary 1-D cycle and high-fidelity CFD performance summary dict.
+        """Preliminary 1-D cycle and high-fidelity CFD performance summary dict."""
         
-        TODO: exhaust_velocity_cfd() is called 3x (directly or via specific_thrust_cfd())
-        per evaluation of performance_summary. Since it does file I/O, this could be a bottleneck.
-        If so, extract into a private helper caching the result keyed by _cfd_runs_counter.
-        """
         return {
             "Thrust [N]":                self.engine_features["Thrust_required"],
             "TSFC [kg/N/s]":             self.TSFC,
@@ -992,8 +982,6 @@ class AeroEngine(GeomBase):
             internal_radius= self.spool.compressor_hub_out,
             external_radius=self.spool.compressor_tip_radii[1],
             length=self.combustor_length,
-            # TODO: verify combustor length convention with Architect
-            #       (currently equal to the inter-machine gap_length)
             material_name=self.engine_materials["combustor"],
             eta_comb=self.engine_features["CC_eta"],
             LHV=self.engine_features["LHV"],
@@ -1220,21 +1208,6 @@ class AeroEngine(GeomBase):
         """Re-size the casing sheet thickness to meet the target containment
         margin, delegating to the EngineFrame child."""
         return self.engine_frame.update_sheet_thickness_for_containment()
-
-    # @action(label='Export report')
-    # def export_report(self):
-    #     """Instantiate ReportWriter and export the full engine report."""
-    #     # TODO: Uncomment once ReportWriter module exists:
-    #     # writer = ReportWriter(
-    #     #     engine=self,
-    #     #     performance=self.preliminary_performance,
-    #     #     weight=self.total_weight,
-    #     # )
-    #     # writer.export()
-    #     print("[AeroEngine] export_report: ReportWriter not yet implemented.")
-    #     print("[AeroEngine] Preliminary performance summary:")
-    #     for key, val in self.preliminary_performance.items():
-    #         print(f"  {key}: {val:.4f}")
 
     def render_axial_section(self):
         """

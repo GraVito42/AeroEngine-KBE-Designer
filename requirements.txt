@@ -1,8 +1,0 @@
-# Required external packages
-parapy
-numpy
-scipy
-openpyxl
-
-# Note: tkinter is a stdlib dependency used for the GUI, and
-# subprocess, pathlib, re, os, math, shutil, logging, sys, importlib, warnings are also part of Python's standard library.

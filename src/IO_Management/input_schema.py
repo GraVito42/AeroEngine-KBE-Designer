@@ -35,8 +35,8 @@ INPUT_SCHEMA = {
         "IPR":              {"label": "Inlet pressure recovery",        "unit": "-",      "type": "float", "default": 0.99,    "min": 0.85,   "max": 1.0},
         "CPR":              {"label": "Compressor pressure ratio",      "unit": "-",      "type": "float", "default": 30.0,    "min": 1.5,    "max": 60.0},
         "CCPR":             {"label": "Combustor pressure ratio",       "unit": "-",      "type": "float", "default": 0.96,    "min": 0.85,   "max": 1.0},
-        "TPR":              {"label": "Turbine pressure ratio",         "unit": "-",      "type": "float", "default": 0.03,    "min": 0.0,    "max": 1.0},   # TODO: verify with Architect
-        "NPR":              {"label": "Nozzle pressure ratio",          "unit": "-",      "type": "float", "default": 0.2,     "min": 0.0,    "max": 1.0},   # TODO: verify with Architect
+        "TPR":              {"label": "Turbine pressure ratio",         "unit": "-",      "type": "float", "default": 0.03,    "min": 0.0,    "max": 1.0},
+        "NPR":              {"label": "Nozzle pressure ratio",          "unit": "-",      "type": "float", "default": 0.2,     "min": 0.0,    "max": 1.0},
         "I_eta":            {"label": "Inlet isentropic efficiency",    "unit": "-",      "type": "float", "default": 0.99,    "min": 0.90,   "max": 1.0},
         "C_eta":            {"label": "Compressor isentropic eff.",     "unit": "-",      "type": "float", "default": 0.88,    "min": 0.80,   "max": 1.0},
         "CC_eta":           {"label": "Combustion efficiency",          "unit": "-",      "type": "float", "default": 0.995,   "min": 0.90,   "max": 1.0},
@@ -51,8 +51,8 @@ INPUT_SCHEMA = {
         "r_gas":            {"label": "Specific gas constant (air)",    "unit": "J/kg/K", "type": "float", "default": 287.05,  "min": 280.0,  "max": 300.0},
         "mech_eta":         {"label": "Shaft mechanical efficiency",    "unit": "-",      "type": "float", "default": 0.98,    "min": 0.90,   "max": 1.0},
         "stage_PR_max":     {"label": "Max per-stage PR (axial)",       "unit": "-",      "type": "float", "default": 1.4,     "min": 1.1,    "max": 1.7},
-        "C_work_coeff":     {"label": "Compressor stage coeff.",        "unit": "-",      "type": "float", "default": 0.4,     "min": 0.2,    "max": 1.2},   # TODO: verify with Architect
-        "T_work_coeff":     {"label": "Turbine stage loading",          "unit": "-",      "type": "float", "default": 1.5,     "min": 0.8,    "max": 3.0},   # TODO: verify with Architect
+        "C_work_coeff":     {"label": "Compressor stage coeff.",        "unit": "-",      "type": "float", "default": 0.4,     "min": 0.2,    "max": 1.2},
+        "T_work_coeff":     {"label": "Turbine stage loading",          "unit": "-",      "type": "float", "default": 1.5,     "min": 0.8,    "max": 3.0},
         "C_reaction_coeff": {"label": "Compressor reaction",            "unit": "-",      "type": "float", "default": 0.5,     "min": 0.0,    "max": 1.0},
         "T_reaction_coeff": {"label": "Turbine reaction",               "unit": "-",      "type": "float", "default": 0.5,     "min": 0.0,    "max": 1.0},
     },
@@ -83,7 +83,5 @@ INPUT_SCHEMA = {
         "shaft":     {"label": "Shaft material",             "unit": "-", "type": "choice", "default": "Ti",           "choices": None},
         "casing":    {"label": "Casing material",            "unit": "-", "type": "choice", "default": "Ti",           "choices": None},
         "combustor": {"label": "Combustor material",         "unit": "-", "type": "choice", "default": "Inconel-718",  "choices": None},
-        # TODO: combustor @Part in AeroEngine.py hardcodes material_name="Inconel-718" —
-        #       wiring this dict to the part is tracked separately, do not fix here.
     },
 }

@@ -141,9 +141,6 @@ class EngineFrame(Duct):
     #: [-]   Nozzle isentropic efficiency
     nozzle_isos_efficiency: float = Input(0.96)
 
-    #: [-]   Design exit Mach number (> 1.0 for convergent-divergent)
-    nozzle_Mach_out: float = Input(1.20)
-
     #: [m]   Axial length of the nozzle
     nozzle_length: float = Input(0.45)
 
@@ -254,7 +251,6 @@ class EngineFrame(Duct):
             x_offset=self.inlet_length + self.casing_length,
             inflow_conditions=self.nozzle_inflow,
             isos_efficiency=self.nozzle_isos_efficiency,
-            Mach_out=self.nozzle_Mach_out,
             station_out=7,
             pressure_ratio=self.nozzle_pressure_ratio,
             p_ambient=self.p_ambient,
@@ -792,7 +788,6 @@ if __name__ == "__main__":
         inlet_wall_thickness=0.012,
         nozzle_pressure_ratio=0.97,
         nozzle_isos_efficiency=0.96,
-        nozzle_Mach_out=1.20,
         nozzle_wall_thickness=0.012,
         p_ambient=101325.0,
         material_name="Ti-6Al-4V",
@@ -837,7 +832,6 @@ if __name__ == "__main__":
         inlet_wall_thickness=0.012,
         nozzle_pressure_ratio=0.97,
         nozzle_isos_efficiency=0.96,
-        nozzle_Mach_out=1.20,
         nozzle_wall_thickness=0.012,
         p_ambient=101325.0,
         material_name="Ti-6Al-4V",

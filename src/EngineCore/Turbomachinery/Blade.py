@@ -33,7 +33,6 @@ Coordinate system
   X — axial / meridional
   Y — radial
   Z — tangential / circumferential
-  # TODO: confirm Z-sign with Architect.
 """
 
 # Ensure project root is in sys.path when running this file directly

@@ -118,8 +118,6 @@ class Combustor(EngineComponent):
         Base position shifted by x_offset along the engine axial axis (local Z).
         All cylinder primitives use this so that x_offset moves the whole
         combustor downstream without touching the inherited EngineComponent position.
-        # TODO: Verify with the Architect that engine-X maps to local 'z'
-        #       post-rotation, consistent with Stage.stage_axial_offset convention.
         """
         return translate(self.position, 'z', self.x_offset)
 

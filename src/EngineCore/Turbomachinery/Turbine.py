@@ -108,7 +108,7 @@ class Turbine(Turbomachine):
         if not (0.0 <= self.reaction <= 0.6):
             warnings.append(
                 f"Turbine '{self.label}': reaction={self.reaction:.3f} is "
-                f"outside the typical 0.0-0.6 band — verify with the Architect."
+                f"outside the typical 0.0-0.6 band."
             )
         return warnings
 

@@ -31,7 +31,6 @@ class FlowCondition(Base):
     @Attribute
     def r_gas(self):
         """Specific gas constant [J/kg/K]."""
-        # TODO: refine fuel_gas value with the Architect (placeholder 287.15).
         return {"air": 287.05, "fuel_gas": 287.15}[self.fluid_type]
 
     def isentropic_trans_th(self, target_type="temperature", target_value=1e6, eta=0.99):
